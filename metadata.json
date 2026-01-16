@@ -1,0 +1,22 @@
+{
+    "$schema": "https://go.kicad.org/pcm/schemas/v1",
+    "name": "Rotate Items Individually",
+    "description": "Rotate each selected item around its own center instead of as a group",
+    "description_full": "This plugin allows you to rotate multiple selected items (footprints, text, drawings) individually around their own centers, rather than rotating the entire selection as a group. Perfect for grids of components or text labels that need individual rotation while maintaining their positions.",
+    "identifier": "com.github.kicad-layout-tools",
+    "type": "plugin",
+    "author": {
+        "name": "Charading",
+        "contact": {
+            "web": "https://github.com/Charading"
+        }
+    },
+    "license": "MIT",
+    "versions": [
+        {
+            "version": "1.0.0",
+            "status": "stable",
+            "kicad_version": "6.0"
+        }
+    ]
+}
