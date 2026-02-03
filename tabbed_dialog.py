@@ -28,6 +28,10 @@ _SETTINGS = {
     'pin_label_thickness': 0.15,
     'pin_label_layer': 'F.SilkS',
     'pin_label_rotation': 0.0,
+    'offset_source_pattern': 'AMB{}',
+    'offset_target_pattern': 'CA{}',
+    'offset_x': 0.0,
+    'offset_y': 0.0,
 }
 
 
@@ -45,6 +49,7 @@ class LayoutToolsDialog(wx.Dialog):
         self.select_pads_panel = SelectPadsPanel(notebook)
         self.via_panel = AddViasPanel(notebook)
         self.pin_label_panel = PinLabelPanel(notebook)
+        self.relative_offset_panel = RelativeOffsetPanel(notebook)
         
         notebook.AddPage(self.rotate_panel, "Rotate Items")
         notebook.AddPage(self.flip_panel, "Flip Items")
@@ -52,6 +57,7 @@ class LayoutToolsDialog(wx.Dialog):
         notebook.AddPage(self.select_pads_panel, "Select Pads")
         notebook.AddPage(self.via_panel, "Add Vias to Pads")
         notebook.AddPage(self.pin_label_panel, "Pin Header Labels")
+        notebook.AddPage(self.relative_offset_panel, "Relative Offset")
         
         # Main sizer
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -985,5 +991,176 @@ class PinLabelPanel(wx.Panel):
             wx.MessageBox(f"Deleted {deleted_count} text items!", "Success", wx.OK | wx.ICON_INFORMATION)
         else:
             wx.MessageBox("No text items selected!", "Error", wx.OK | wx.ICON_ERROR)
+
+
+class RelativeOffsetPanel(wx.Panel):
+    def __init__(self, parent):
+        wx.Panel.__init__(self, parent)
+
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Title
+        title = wx.StaticText(self, label="Relative Offset by Reference Designator")
+        title_font = title.GetFont()
+        title_font.PointSize += 2
+        title_font = title_font.Bold()
+        title.SetFont(title_font)
+        vbox.Add(title, flag=wx.ALL, border=10)
+
+        # Description
+        desc = wx.StaticText(self, label="Position target footprints relative to source footprints by matching reference designator patterns.")
+        desc.Wrap(400)
+        vbox.Add(desc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        # Source pattern input
+        hbox1 = wx.BoxSizer(wx.HORIZONTAL)
+        source_label = wx.StaticText(self, label="Source Pattern:")
+        hbox1.Add(source_label, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        self.source_pattern_ctrl = wx.TextCtrl(self, value=_SETTINGS['offset_source_pattern'])
+        self.source_pattern_ctrl.Bind(wx.EVT_TEXT, self.OnPatternChange)
+        hbox1.Add(self.source_pattern_ctrl, proportion=1)
+        vbox.Add(hbox1, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Target pattern input
+        hbox2 = wx.BoxSizer(wx.HORIZONTAL)
+        target_label = wx.StaticText(self, label="Target Pattern:")
+        hbox2.Add(target_label, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        self.target_pattern_ctrl = wx.TextCtrl(self, value=_SETTINGS['offset_target_pattern'])
+        self.target_pattern_ctrl.Bind(wx.EVT_TEXT, self.OnPatternChange)
+        hbox2.Add(self.target_pattern_ctrl, proportion=1)
+        vbox.Add(hbox2, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Help text
+        help_text = wx.StaticText(self, label="Use {} as placeholder for numbers (e.g., AMB{} matches AMB1, AMB2, ...)")
+        help_text.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(help_text, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # X offset input
+        hbox3 = wx.BoxSizer(wx.HORIZONTAL)
+        x_label = wx.StaticText(self, label="X Offset (mm):")
+        hbox3.Add(x_label, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        self.x_offset_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['offset_x']),
+                                                min=-1000, max=1000, initial=_SETTINGS['offset_x'], inc=0.5)
+        self.x_offset_ctrl.SetDigits(3)
+        hbox3.Add(self.x_offset_ctrl, proportion=1)
+        vbox.Add(hbox3, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Y offset input
+        hbox4 = wx.BoxSizer(wx.HORIZONTAL)
+        y_label = wx.StaticText(self, label="Y Offset (mm):")
+        hbox4.Add(y_label, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        self.y_offset_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['offset_y']),
+                                                min=-1000, max=1000, initial=_SETTINGS['offset_y'], inc=0.5)
+        self.y_offset_ctrl.SetDigits(3)
+        hbox4.Add(self.y_offset_ctrl, proportion=1)
+        vbox.Add(hbox4, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Matched pairs display
+        self.matched_label = wx.StaticText(self, label="Matched pairs: 0")
+        vbox.Add(self.matched_label, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        self.pairs_list = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY, size=(-1, 80))
+        vbox.Add(self.pairs_list, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Apply button
+        apply_btn = wx.Button(self, label="Apply Offset")
+        apply_btn.Bind(wx.EVT_BUTTON, self.OnApplyOffset)
+        vbox.Add(apply_btn, flag=wx.ALIGN_CENTER | wx.TOP, border=20)
+
+        self.SetSizer(vbox)
+
+        # Initial update of matched pairs
+        self.OnPatternChange(None)
+
+    def OnPatternChange(self, event):
+        """Update matched pairs when patterns change."""
+        source_pattern = self.source_pattern_ctrl.GetValue()
+        target_pattern = self.target_pattern_ctrl.GetValue()
+
+        pairs = self._find_matching_pairs(source_pattern, target_pattern)
+
+        self.matched_label.SetLabel(f"Matched pairs: {len(pairs)}")
+
+        if pairs:
+            # Sort by number and format display
+            sorted_nums = sorted(pairs.keys(), key=lambda x: int(x) if x.isdigit() else x)
+            pair_strs = []
+            for num in sorted_nums[:10]:  # Show first 10
+                src, tgt = pairs[num]
+                pair_strs.append(f"{src.GetReference()} -> {tgt.GetReference()}")
+            if len(pairs) > 10:
+                pair_strs.append(f"... and {len(pairs) - 10} more")
+            self.pairs_list.SetValue("\n".join(pair_strs))
+        else:
+            self.pairs_list.SetValue("No matching pairs found")
+
+    def _find_matching_pairs(self, source_pattern, target_pattern):
+        """Find footprint pairs where source and target numbers match."""
+        if not source_pattern or not target_pattern or "{}" not in source_pattern or "{}" not in target_pattern:
+            return {}
+
+        board = pcbnew.GetBoard()
+
+        # Convert patterns to regex
+        source_regex = re.escape(source_pattern).replace(r"\{\}", r"(\d+)")
+        target_regex = re.escape(target_pattern).replace(r"\{\}", r"(\d+)")
+
+        # Find all footprints matching each pattern
+        source_footprints = {}  # {number: footprint}
+        target_footprints = {}  # {number: footprint}
+
+        for footprint in board.GetFootprints():
+            ref = footprint.GetReference()
+
+            source_match = re.fullmatch(source_regex, ref)
+            if source_match:
+                source_footprints[source_match.group(1)] = footprint
+
+            target_match = re.fullmatch(target_regex, ref)
+            if target_match:
+                target_footprints[target_match.group(1)] = footprint
+
+        # Find pairs with matching numbers
+        pairs = {}
+        for num in source_footprints:
+            if num in target_footprints:
+                pairs[num] = (source_footprints[num], target_footprints[num])
+
+        return pairs
+
+    def OnApplyOffset(self, event):
+        """Apply relative offset to matched footprint pairs."""
+        source_pattern = self.source_pattern_ctrl.GetValue()
+        target_pattern = self.target_pattern_ctrl.GetValue()
+        x_offset_mm = self.x_offset_ctrl.GetValue()
+        y_offset_mm = self.y_offset_ctrl.GetValue()
+
+        # Save settings
+        _SETTINGS['offset_source_pattern'] = source_pattern
+        _SETTINGS['offset_target_pattern'] = target_pattern
+        _SETTINGS['offset_x'] = x_offset_mm
+        _SETTINGS['offset_y'] = y_offset_mm
+
+        # Find matching pairs
+        pairs = self._find_matching_pairs(source_pattern, target_pattern)
+
+        if not pairs:
+            wx.MessageBox("No matching footprint pairs found!", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        # Convert mm to internal units
+        x_offset = pcbnew.FromMM(x_offset_mm)
+        y_offset = pcbnew.FromMM(y_offset_mm)
+
+        # Apply offset to each pair
+        for num, (source_fp, target_fp) in pairs.items():
+            source_pos = source_fp.GetPosition()
+            new_x = source_pos.x + x_offset
+            new_y = source_pos.y + y_offset
+            new_pos = pcbnew.VECTOR2I(int(new_x), int(new_y))
+            target_fp.SetPosition(new_pos)
+
+        pcbnew.Refresh()
+        wx.MessageBox(f"Applied offset to {len(pairs)} footprint(s)", "Success", wx.OK | wx.ICON_INFORMATION)
 
 
