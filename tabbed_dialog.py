@@ -1066,7 +1066,7 @@ class RelativeOffsetPanel(wx.Panel):
         preset_box = wx.StaticBox(self, label="Presets")
         preset_sizer = wx.StaticBoxSizer(preset_box, wx.HORIZONTAL)
 
-        led_cap_btn = wx.Button(self, label="LED/Capacitor (4.80, 0.75)")
+        led_cap_btn = wx.Button(preset_box, label="LED/Cap (4.80, 0.75)")
         led_cap_btn.Bind(wx.EVT_BUTTON, self.OnLedCapPreset)
         preset_sizer.Add(led_cap_btn, flag=wx.ALL, border=5)
 
