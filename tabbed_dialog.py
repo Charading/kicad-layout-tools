@@ -1063,14 +1063,15 @@ class RelativeOffsetPanel(wx.Panel):
         vbox.Add(self.pairs_list, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
         # Preset buttons
-        preset_box = wx.StaticBox(self, label="Presets")
-        preset_sizer = wx.StaticBoxSizer(preset_box, wx.HORIZONTAL)
+        preset_hbox = wx.BoxSizer(wx.HORIZONTAL)
+        preset_label = wx.StaticText(self, label="Presets:")
+        preset_hbox.Add(preset_label, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
 
-        led_cap_btn = wx.Button(preset_box, label="LED/Cap (4.80, 0.75)")
+        led_cap_btn = wx.Button(self, label="LED/Cap (4.80, 0.75)")
         led_cap_btn.Bind(wx.EVT_BUTTON, self.OnLedCapPreset)
-        preset_sizer.Add(led_cap_btn, flag=wx.ALL, border=5)
+        preset_hbox.Add(led_cap_btn, flag=wx.RIGHT, border=5)
 
-        vbox.Add(preset_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        vbox.Add(preset_hbox, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
         # Apply button
         apply_btn = wx.Button(self, label="Apply Offset")
