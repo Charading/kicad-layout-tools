@@ -1062,6 +1062,16 @@ class RelativeOffsetPanel(wx.Panel):
         self.pairs_list = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY, size=(-1, 80))
         vbox.Add(self.pairs_list, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
+        # Preset buttons
+        preset_box = wx.StaticBox(self, label="Presets")
+        preset_sizer = wx.StaticBoxSizer(preset_box, wx.HORIZONTAL)
+
+        led_cap_btn = wx.Button(self, label="LED/Capacitor (4.80, 0.75)")
+        led_cap_btn.Bind(wx.EVT_BUTTON, self.OnLedCapPreset)
+        preset_sizer.Add(led_cap_btn, flag=wx.ALL, border=5)
+
+        vbox.Add(preset_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
         # Apply button
         apply_btn = wx.Button(self, label="Apply Offset")
         apply_btn.Bind(wx.EVT_BUTTON, self.OnApplyOffset)
@@ -1071,6 +1081,11 @@ class RelativeOffsetPanel(wx.Panel):
 
         # Initial update of matched pairs
         self.OnPatternChange(None)
+
+    def OnLedCapPreset(self, event):
+        """Fill in LED/Capacitor offset preset values."""
+        self.x_offset_ctrl.SetValue(4.80)
+        self.y_offset_ctrl.SetValue(0.75)
 
     def OnPatternChange(self, event):
         """Update matched pairs when patterns change."""
