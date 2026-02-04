@@ -788,22 +788,22 @@ class ChainRoutePanel(wx.Panel):
                 board.Add(track)
                 return (1, 0, [track])
 
-        # Calculate via positions - stub comes straight out from pad center (perpendicular)
-        # If LEDs are more horizontal, stub goes vertical; if more vertical, stub goes horizontal
+        # Calculate via positions - stub comes straight out from pad center
+        # If LEDs are more horizontal, stub goes horizontal; if more vertical, stub goes vertical
         if abs(dx) >= abs(dy):
-            # More horizontal arrangement - stubs go vertical (up/down)
-            via1_y_offset = stub_length if dy >= 0 else -stub_length
-            via1_x = start_pos.x
-            via1_y = start_pos.y + via1_y_offset
-            via2_x = end_pos.x
-            via2_y = end_pos.y - via1_y_offset
-        else:
-            # More vertical arrangement - stubs go horizontal (left/right)
+            # More horizontal arrangement - stubs go horizontal (left/right)
             via1_x_offset = stub_length if dx >= 0 else -stub_length
             via1_x = start_pos.x + via1_x_offset
             via1_y = start_pos.y
             via2_x = end_pos.x - via1_x_offset
             via2_y = end_pos.y
+        else:
+            # More vertical arrangement - stubs go vertical (up/down)
+            via1_y_offset = stub_length if dy >= 0 else -stub_length
+            via1_x = start_pos.x
+            via1_y = start_pos.y + via1_y_offset
+            via2_x = end_pos.x
+            via2_y = end_pos.y - via1_y_offset
 
         via1_pos = pcbnew.VECTOR2I(int(via1_x), int(via1_y))
         via2_pos = pcbnew.VECTOR2I(int(via2_x), int(via2_y))
