@@ -773,7 +773,7 @@ class AddViasPanel(wx.Panel):
         title = wx.StaticText(self, label="Add Vias to Pads")
         title_font = title.GetFont()
         title_font.PointSize += 2
-        title_font = title_font.Bold()3
+        title_font = title_font.Bold()
         title.SetFont(title_font)
         vbox.Add(title, flag=wx.ALL, border=10)
         
