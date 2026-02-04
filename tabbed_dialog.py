@@ -12,12 +12,22 @@ _SETTINGS = {
     'chain_track_width': 0.25,
     'chain_layer': 'F.Cu',
     'chain_use_45deg': True,
+    'chain_use_via_transition': False,
+    'chain_via_layer': 'B.Cu',
+    'chain_via_size': 0.8,
+    'chain_via_drill': 0.4,
+    'chain_stub_length': 1.0,
     'via_ref_prefix': 'D',
     'via_pad_num': '2',
     'via_size': 0.8,
     'via_drill': 0.4,
     'via_type': 0,
     'via_selected_only': False,
+    'via_offset_x': 0.0,
+    'via_offset_y': 0.0,
+    'via_auto_route': False,
+    'via_track_width': 0.25,
+    'via_track_layer': 'F.Cu',
     'select_ref_prefix': 'C',
     'select_pad_num': '1',
     'select_mode_selected': False,
@@ -353,6 +363,42 @@ class ChainRoutePanel(wx.Panel):
         self.use_45deg_check.SetValue(_SETTINGS['chain_use_45deg'])
         vbox.Add(self.use_45deg_check, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
+        # Via transition checkbox and options
+        self.use_via_check = wx.CheckBox(self, label="Use via transition (stub → via → other layer → via → stub)")
+        self.use_via_check.SetValue(_SETTINGS['chain_use_via_transition'])
+        vbox.Add(self.use_via_check, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Via options row
+        via_hbox = wx.BoxSizer(wx.HORIZONTAL)
+        via_hbox.Add(wx.StaticText(self, label="Via layer:"), flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
+        self.via_layer_choice = wx.Choice(self, choices=layers, size=(80, -1))
+        if _SETTINGS['chain_via_layer'] in layers:
+            self.via_layer_choice.SetStringSelection(_SETTINGS['chain_via_layer'])
+        elif "B.Cu" in layers:
+            self.via_layer_choice.SetStringSelection("B.Cu")
+        via_hbox.Add(self.via_layer_choice, flag=wx.RIGHT, border=10)
+
+        via_hbox.Add(wx.StaticText(self, label="Via:"), flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
+        self.via_size_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['chain_via_size']), min=0.2, max=3.0,
+                                                initial=_SETTINGS['chain_via_size'], inc=0.1, size=(60, -1))
+        self.via_size_ctrl.SetDigits(2)
+        via_hbox.Add(self.via_size_ctrl, flag=wx.RIGHT, border=5)
+
+        via_hbox.Add(wx.StaticText(self, label="/"), flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
+        self.via_drill_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['chain_via_drill']), min=0.1, max=2.0,
+                                                 initial=_SETTINGS['chain_via_drill'], inc=0.1, size=(60, -1))
+        self.via_drill_ctrl.SetDigits(2)
+        via_hbox.Add(self.via_drill_ctrl, flag=wx.RIGHT, border=10)
+
+        via_hbox.Add(wx.StaticText(self, label="Stub:"), flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
+        self.stub_length_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['chain_stub_length']), min=0.1, max=10.0,
+                                                   initial=_SETTINGS['chain_stub_length'], inc=0.25, size=(60, -1))
+        self.stub_length_ctrl.SetDigits(2)
+        via_hbox.Add(self.stub_length_ctrl)
+        via_hbox.Add(wx.StaticText(self, label="mm"), flag=wx.ALIGN_CENTER_VERTICAL | wx.LEFT, border=3)
+
+        vbox.Add(via_hbox, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=25)
+
         # Create tracks button
         route_btn = wx.Button(self, label="Create Chain Tracks")
         route_btn.Bind(wx.EVT_BUTTON, self.OnChainRoute)
@@ -369,6 +415,11 @@ class ChainRoutePanel(wx.Panel):
         track_width = self.track_width_ctrl.GetValue()
         layer_name = self.layer_choice.GetStringSelection()
         use_45deg = self.use_45deg_check.GetValue()
+        use_via_transition = self.use_via_check.GetValue()
+        via_layer_name = self.via_layer_choice.GetStringSelection()
+        via_size = self.via_size_ctrl.GetValue()
+        via_drill = self.via_drill_ctrl.GetValue()
+        stub_length = self.stub_length_ctrl.GetValue()
 
         # Save settings
         _SETTINGS['chain_ref_prefix'] = ref_prefix
@@ -377,6 +428,11 @@ class ChainRoutePanel(wx.Panel):
         _SETTINGS['chain_track_width'] = track_width
         _SETTINGS['chain_layer'] = layer_name
         _SETTINGS['chain_use_45deg'] = use_45deg
+        _SETTINGS['chain_use_via_transition'] = use_via_transition
+        _SETTINGS['chain_via_layer'] = via_layer_name
+        _SETTINGS['chain_via_size'] = via_size
+        _SETTINGS['chain_via_drill'] = via_drill
+        _SETTINGS['chain_stub_length'] = stub_length
 
         # Find all footprints matching the prefix
         matching_footprints = []
@@ -396,21 +452,32 @@ class ChainRoutePanel(wx.Panel):
         # Sort by reference number
         matching_footprints.sort(key=lambda x: x[0])
 
-        # Get the layer
+        # Get the layers
         layer_id = None
+        via_layer_id = None
         for i in range(pcbnew.PCB_LAYER_ID_COUNT):
-            if board.GetLayerName(i) == layer_name:
+            name = board.GetLayerName(i)
+            if name == layer_name:
                 layer_id = i
-                break
+            if name == via_layer_name:
+                via_layer_id = i
 
         if layer_id is None:
             wx.MessageBox(f"Layer '{layer_name}' not found!", "Error", wx.OK | wx.ICON_ERROR)
             return
 
+        if use_via_transition and via_layer_id is None:
+            wx.MessageBox(f"Via layer '{via_layer_name}' not found!", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
         # Create tracks between consecutive LEDs
         tracks_created = 0
+        vias_created = 0
         errors = []
         width_iu = pcbnew.FromMM(track_width)
+        via_size_iu = pcbnew.FromMM(via_size)
+        via_drill_iu = pcbnew.FromMM(via_drill)
+        stub_length_iu = pcbnew.FromMM(stub_length)
 
         for i in range(len(matching_footprints) - 1):
             num1, fp1 = matching_footprints[i]
@@ -430,7 +497,15 @@ class ChainRoutePanel(wx.Panel):
             end_pos = in_pad.GetPosition()
             net = out_pad.GetNet()
 
-            if use_45deg:
+            if use_via_transition:
+                # Create via transition route
+                count, via_count = self._create_via_transition_route(
+                    board, start_pos, end_pos, width_iu, layer_id, via_layer_id,
+                    net, via_size_iu, via_drill_iu, stub_length_iu, use_45deg
+                )
+                tracks_created += count
+                vias_created += via_count
+            elif use_45deg:
                 # Create 45°/90° route with diagonal in middle
                 tracks_created += self._create_45deg_middle_route(board, start_pos, end_pos, width_iu, layer_id, net)
             else:
@@ -447,13 +522,19 @@ class ChainRoutePanel(wx.Panel):
         pcbnew.Refresh()
 
         if errors:
-            msg = f"Created {tracks_created} track segments.\n\nErrors:\n" + "\n".join(errors[:5])
+            msg = f"Created {tracks_created} track segments"
+            if vias_created > 0:
+                msg += f" and {vias_created} vias"
+            msg += f".\n\nErrors:\n" + "\n".join(errors[:5])
             if len(errors) > 5:
                 msg += f"\n... and {len(errors) - 5} more errors"
             wx.MessageBox(msg, "Completed with Errors", wx.OK | wx.ICON_WARNING)
         else:
-            wx.MessageBox(f"Successfully created {tracks_created} track segments between {len(matching_footprints)} LEDs!",
-                         "Success", wx.OK | wx.ICON_INFORMATION)
+            msg = f"Successfully created {tracks_created} track segments"
+            if vias_created > 0:
+                msg += f" and {vias_created} vias"
+            msg += f" between {len(matching_footprints)} LEDs!"
+            wx.MessageBox(msg, "Success", wx.OK | wx.ICON_INFORMATION)
 
     def _create_45deg_middle_route(self, board, start_pos, end_pos, width, layer_id, net):
         """Create a route with 45° diagonal in the middle.
@@ -542,6 +623,145 @@ class ChainRoutePanel(wx.Panel):
 
         return segments_created
 
+    def _create_via_transition_route(self, board, start_pos, end_pos, width, layer_id, via_layer_id,
+                                      net, via_size, via_drill, stub_length, use_45deg):
+        """Create a route with via transitions: stub → via → other layer → via → stub.
+
+        Returns (track_count, via_count).
+        """
+        dx = end_pos.x - start_pos.x
+        dy = end_pos.y - start_pos.y
+        total_dist = (dx * dx + dy * dy) ** 0.5
+
+        # If distance is too short for via transition, just do direct route
+        if total_dist < stub_length * 3:
+            if use_45deg:
+                return (self._create_45deg_middle_route(board, start_pos, end_pos, width, layer_id, net), 0)
+            else:
+                track = pcbnew.PCB_TRACK(board)
+                track.SetStart(start_pos)
+                track.SetEnd(end_pos)
+                track.SetWidth(width)
+                track.SetLayer(layer_id)
+                track.SetNet(net)
+                board.Add(track)
+                return (1, 0)
+
+        # Calculate direction unit vector
+        if total_dist > 0:
+            dir_x = dx / total_dist
+            dir_y = dy / total_dist
+        else:
+            dir_x, dir_y = 1, 0
+
+        # Calculate via positions (stub_length from each end)
+        via1_x = start_pos.x + dir_x * stub_length
+        via1_y = start_pos.y + dir_y * stub_length
+        via1_pos = pcbnew.VECTOR2I(int(via1_x), int(via1_y))
+
+        via2_x = end_pos.x - dir_x * stub_length
+        via2_y = end_pos.y - dir_y * stub_length
+        via2_pos = pcbnew.VECTOR2I(int(via2_x), int(via2_y))
+
+        tracks_created = 0
+
+        # Create first stub on start layer
+        track1 = pcbnew.PCB_TRACK(board)
+        track1.SetStart(start_pos)
+        track1.SetEnd(via1_pos)
+        track1.SetWidth(width)
+        track1.SetLayer(layer_id)
+        track1.SetNet(net)
+        board.Add(track1)
+        tracks_created += 1
+
+        # Create first via
+        via1 = pcbnew.PCB_VIA(board)
+        via1.SetPosition(via1_pos)
+        via1.SetWidth(via_size)
+        via1.SetDrill(via_drill)
+        via1.SetViaType(pcbnew.VIATYPE_THROUGH)
+        via1.SetNet(net)
+        board.Add(via1)
+
+        # Create middle track on via layer (with optional 45° routing)
+        if use_45deg:
+            # Use simple 2-segment 45° routing for middle section
+            mid_dx = via2_pos.x - via1_pos.x
+            mid_dy = via2_pos.y - via1_pos.y
+
+            if mid_dx != 0 and mid_dy != 0 and abs(mid_dx) != abs(mid_dy):
+                diag_len = min(abs(mid_dx), abs(mid_dy))
+                if abs(mid_dx) > abs(mid_dy):
+                    straight_len = abs(mid_dx) - diag_len
+                    mid_x = via1_pos.x + (straight_len if mid_dx > 0 else -straight_len)
+                    mid_y = via1_pos.y
+                else:
+                    straight_len = abs(mid_dy) - diag_len
+                    mid_x = via1_pos.x
+                    mid_y = via1_pos.y + (straight_len if mid_dy > 0 else -straight_len)
+
+                mid_pos = pcbnew.VECTOR2I(int(mid_x), int(mid_y))
+
+                track2a = pcbnew.PCB_TRACK(board)
+                track2a.SetStart(via1_pos)
+                track2a.SetEnd(mid_pos)
+                track2a.SetWidth(width)
+                track2a.SetLayer(via_layer_id)
+                track2a.SetNet(net)
+                board.Add(track2a)
+                tracks_created += 1
+
+                track2b = pcbnew.PCB_TRACK(board)
+                track2b.SetStart(mid_pos)
+                track2b.SetEnd(via2_pos)
+                track2b.SetWidth(width)
+                track2b.SetLayer(via_layer_id)
+                track2b.SetNet(net)
+                board.Add(track2b)
+                tracks_created += 1
+            else:
+                # Already aligned, single track
+                track2 = pcbnew.PCB_TRACK(board)
+                track2.SetStart(via1_pos)
+                track2.SetEnd(via2_pos)
+                track2.SetWidth(width)
+                track2.SetLayer(via_layer_id)
+                track2.SetNet(net)
+                board.Add(track2)
+                tracks_created += 1
+        else:
+            # Direct track on via layer
+            track2 = pcbnew.PCB_TRACK(board)
+            track2.SetStart(via1_pos)
+            track2.SetEnd(via2_pos)
+            track2.SetWidth(width)
+            track2.SetLayer(via_layer_id)
+            track2.SetNet(net)
+            board.Add(track2)
+            tracks_created += 1
+
+        # Create second via
+        via2 = pcbnew.PCB_VIA(board)
+        via2.SetPosition(via2_pos)
+        via2.SetWidth(via_size)
+        via2.SetDrill(via_drill)
+        via2.SetViaType(pcbnew.VIATYPE_THROUGH)
+        via2.SetNet(net)
+        board.Add(via2)
+
+        # Create last stub on start layer
+        track3 = pcbnew.PCB_TRACK(board)
+        track3.SetStart(via2_pos)
+        track3.SetEnd(end_pos)
+        track3.SetWidth(width)
+        track3.SetLayer(layer_id)
+        track3.SetNet(net)
+        board.Add(track3)
+        tracks_created += 1
+
+        return (tracks_created, 2)
+
 
 class AddViasPanel(wx.Panel):
     def __init__(self, parent):
@@ -553,7 +773,7 @@ class AddViasPanel(wx.Panel):
         title = wx.StaticText(self, label="Add Vias to Pads")
         title_font = title.GetFont()
         title_font.PointSize += 2
-        title_font = title_font.Bold()
+        title_font = title_font.Bold()3
         title.SetFont(title_font)
         vbox.Add(title, flag=wx.ALL, border=10)
         
@@ -619,7 +839,57 @@ class AddViasPanel(wx.Panel):
         hbox4.Add(self.via_type_choice, proportion=1)
         
         vbox.Add(hbox4, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
-        
+
+        # Via Offset
+        hbox_offset = wx.BoxSizer(wx.HORIZONTAL)
+        hbox_offset.Add(wx.StaticText(self, label="Via Offset X (mm):"),
+                       flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        self.offset_x_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['via_offset_x']),
+                                                min=-10.0, max=10.0,
+                                                initial=_SETTINGS['via_offset_x'], inc=0.1, size=(70, -1))
+        self.offset_x_ctrl.SetDigits(2)
+        hbox_offset.Add(self.offset_x_ctrl)
+
+        hbox_offset.Add(wx.StaticText(self, label="Y (mm):"),
+                       flag=wx.LEFT | wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=15)
+        self.offset_y_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['via_offset_y']),
+                                                min=-10.0, max=10.0,
+                                                initial=_SETTINGS['via_offset_y'], inc=0.1, size=(70, -1))
+        self.offset_y_ctrl.SetDigits(2)
+        hbox_offset.Add(self.offset_y_ctrl)
+        vbox.Add(hbox_offset, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        help_offset = wx.StaticText(self, label="(Offset from pad center, positive X = right, positive Y = down)")
+        help_offset.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(help_offset, flag=wx.LEFT | wx.TOP, border=10)
+
+        # Auto route checkbox
+        self.auto_route_check = wx.CheckBox(self, label="Auto route from pad to via (when offset)")
+        self.auto_route_check.SetValue(_SETTINGS['via_auto_route'])
+        self.auto_route_check.Bind(wx.EVT_CHECKBOX, self.OnAutoRouteCheck)
+        vbox.Add(self.auto_route_check, flag=wx.LEFT | wx.TOP, border=10)
+
+        # Track settings (for auto route)
+        hbox_track = wx.BoxSizer(wx.HORIZONTAL)
+        hbox_track.Add(wx.StaticText(self, label="Track Width (mm):"),
+                      flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        self.track_width_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['via_track_width']),
+                                                   min=0.1, max=5.0,
+                                                   initial=_SETTINGS['via_track_width'], inc=0.05, size=(70, -1))
+        self.track_width_ctrl.SetDigits(2)
+        hbox_track.Add(self.track_width_ctrl)
+
+        hbox_track.Add(wx.StaticText(self, label="Layer:"),
+                      flag=wx.LEFT | wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=15)
+        self.track_layer_choice = wx.Choice(self, choices=['F.Cu', 'B.Cu', 'In1.Cu', 'In2.Cu'])
+        layer_idx = ['F.Cu', 'B.Cu', 'In1.Cu', 'In2.Cu'].index(_SETTINGS['via_track_layer']) if _SETTINGS['via_track_layer'] in ['F.Cu', 'B.Cu', 'In1.Cu', 'In2.Cu'] else 0
+        self.track_layer_choice.SetSelection(layer_idx)
+        hbox_track.Add(self.track_layer_choice)
+        vbox.Add(hbox_track, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Enable/disable track settings based on auto route checkbox
+        self._update_track_controls()
+
         # Buttons
         hbox_btns = wx.BoxSizer(wx.HORIZONTAL)
         
@@ -630,11 +900,21 @@ class AddViasPanel(wx.Panel):
         via_btn = wx.Button(self, label="Create Vias in Pads")
         via_btn.Bind(wx.EVT_BUTTON, self.OnCreateVias)
         hbox_btns.Add(via_btn)
-        
+
         vbox.Add(hbox_btns, flag=wx.ALIGN_CENTER | wx.TOP | wx.BOTTOM, border=15)
-        
+
         self.SetSizer(vbox)
-    
+
+    def OnAutoRouteCheck(self, event):
+        """Enable/disable track controls based on auto route checkbox."""
+        self._update_track_controls()
+
+    def _update_track_controls(self):
+        """Enable track controls only when auto route is checked."""
+        enabled = self.auto_route_check.GetValue()
+        self.track_width_ctrl.Enable(enabled)
+        self.track_layer_choice.Enable(enabled)
+
     def OnSelectPads(self, event):
         """Select pads without creating vias"""
         board = pcbnew.GetBoard()
@@ -683,14 +963,19 @@ class AddViasPanel(wx.Panel):
     
     def OnCreateVias(self, event):
         board = pcbnew.GetBoard()
-        
+
         ref_prefix = self.ref_prefix_ctrl.GetValue().strip()
         pad_num = self.pad_num_ctrl.GetValue().strip()
         via_size = self.via_size_ctrl.GetValue()
         via_drill = self.via_drill_ctrl.GetValue()
         via_type = self.via_type_choice.GetSelection()
         selected_only = self.selected_only_check.GetValue()
-        
+        offset_x = self.offset_x_ctrl.GetValue()
+        offset_y = self.offset_y_ctrl.GetValue()
+        auto_route = self.auto_route_check.GetValue()
+        track_width = self.track_width_ctrl.GetValue()
+        track_layer_name = self.track_layer_choice.GetStringSelection()
+
         # Save settings for next time
         _SETTINGS['via_ref_prefix'] = ref_prefix
         _SETTINGS['via_pad_num'] = pad_num
@@ -698,15 +983,20 @@ class AddViasPanel(wx.Panel):
         _SETTINGS['via_drill'] = via_drill
         _SETTINGS['via_type'] = via_type
         _SETTINGS['via_selected_only'] = selected_only
-        
+        _SETTINGS['via_offset_x'] = offset_x
+        _SETTINGS['via_offset_y'] = offset_y
+        _SETTINGS['via_auto_route'] = auto_route
+        _SETTINGS['via_track_width'] = track_width
+        _SETTINGS['via_track_layer'] = track_layer_name
+
         # Validate drill size
         if via_drill >= via_size:
             wx.MessageBox("Drill size must be smaller than via size!", "Error", wx.OK | wx.ICON_ERROR)
             return
-        
+
         # Find all matching pads
         matching_pads = self._find_matching_pads(board, ref_prefix, pad_num, selected_only)
-        
+
         if not matching_pads:
             msg = f"No pads found"
             if ref_prefix:
@@ -714,37 +1004,64 @@ class AddViasPanel(wx.Panel):
             msg += f" with pad number '{pad_num}'"
             wx.MessageBox(msg, "Error", wx.OK | wx.ICON_ERROR)
             return
-        
+
+        # Get layer ID for tracks
+        layer_id = board.GetLayerID(track_layer_name)
+
+        # Convert offset to internal units
+        offset_x_iu = pcbnew.FromMM(offset_x)
+        offset_y_iu = pcbnew.FromMM(offset_y)
+        has_offset = offset_x != 0 or offset_y != 0
+
         # Create vias
         vias_created = 0
-        
+        tracks_created = 0
+
         for ref, pad in matching_pads:
-            # Create a via at the pad's position
+            pad_pos = pad.GetPosition()
+
+            # Calculate via position with offset
+            via_pos = pcbnew.VECTOR2I(pad_pos.x + offset_x_iu, pad_pos.y + offset_y_iu)
+
+            # Create a via
             via = pcbnew.PCB_VIA(board)
-            via.SetPosition(pad.GetPosition())
+            via.SetPosition(via_pos)
             via.SetWidth(pcbnew.FromMM(via_size))
             via.SetDrill(pcbnew.FromMM(via_drill))
-            
+
             # Set via type
             if via_type == 0:  # Through
                 via.SetViaType(pcbnew.VIATYPE_THROUGH)
             else:  # Blind/Buried
                 via.SetViaType(pcbnew.VIATYPE_BLIND_BURIED)
-            
+
             # Set the net from the pad
             via.SetNet(pad.GetNet())
-            
+
             # Add to board
             board.Add(via)
             vias_created += 1
-        
+
+            # Create track from pad to via if auto route is enabled and there's an offset
+            if auto_route and has_offset:
+                track = pcbnew.PCB_TRACK(board)
+                track.SetStart(pad_pos)
+                track.SetEnd(via_pos)
+                track.SetWidth(pcbnew.FromMM(track_width))
+                track.SetLayer(layer_id)
+                track.SetNet(pad.GetNet())
+                board.Add(track)
+                tracks_created += 1
+
         pcbnew.Refresh()
-        
+
         msg = f"Successfully created {vias_created} vias"
+        if tracks_created > 0:
+            msg += f" and {tracks_created} tracks"
         if ref_prefix:
             msg += f" on {ref_prefix}* footprints"
         msg += f" at pad {pad_num}!"
-        
+
         wx.MessageBox(msg, "Success", wx.OK | wx.ICON_INFORMATION)
 
 
@@ -1323,7 +1640,7 @@ class PadToPadRoutePanel(wx.Panel):
         vbox.Add(title, flag=wx.ALL, border=10)
 
         # Description
-        desc = wx.StaticText(self, label="Route tracks between corresponding pads on matched footprint pairs (e.g., connect LED GND pads to capacitor pads).")
+        desc = wx.StaticText(self, label="Route tracks between corresponding pads on matched footprint pairs (e.g., connect LED VDD pads to capacitor pads).")
         desc.Wrap(400)
         vbox.Add(desc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
@@ -1434,7 +1751,7 @@ class PadToPadRoutePanel(wx.Panel):
         preset_label = wx.StaticText(self, label="Presets:")
         preset_hbox.Add(preset_label, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
 
-        led_cap_btn = wx.Button(self, label="LED/Cap GND")
+        led_cap_btn = wx.Button(self, label="LED/Cap")
         led_cap_btn.Bind(wx.EVT_BUTTON, self.OnLedCapPreset)
         preset_hbox.Add(led_cap_btn, flag=wx.RIGHT, border=5)
 
@@ -1455,7 +1772,7 @@ class PadToPadRoutePanel(wx.Panel):
         self.OnPatternChange(None)
 
     def OnLedCapPreset(self, event):
-        """Fill in LED/Capacitor preset values for GND connection."""
+        """Fill in LED/Capacitor preset values for VDD connection."""
         self.source_pattern_ctrl.SetValue("D{}")
         self.source_pad_ctrl.SetValue("2")
         self.target_pattern_ctrl.SetValue("C{}")
