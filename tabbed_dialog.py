@@ -1,10 +1,15 @@
 import wx
 import pcbnew
 import re
+import json
+import os
 
 
-# Persistent settings storage
-_SETTINGS = {
+# Settings file path (in same directory as this script)
+_SETTINGS_FILE = os.path.join(os.path.dirname(__file__), 'layout_tools_settings.json')
+
+# Default settings
+_DEFAULT_SETTINGS = {
     'rotate_angle': 90.0,
     'chain_ref_prefix': 'D',
     'chain_output_pad': '1',
@@ -12,6 +17,7 @@ _SETTINGS = {
     'chain_track_width': 0.25,
     'chain_layer': 'F.Cu',
     'chain_use_45deg': True,
+    'chain_max_distance': 30.0,
     'chain_use_via_transition': False,
     'chain_via_layer': 'B.Cu',
     'chain_via_size': 0.8,
@@ -61,6 +67,35 @@ _SETTINGS = {
     'unroute_pad': '2',
     'unroute_follow_traces': True,
 }
+
+
+def _load_settings():
+    """Load settings from file, merging with defaults."""
+    settings = _DEFAULT_SETTINGS.copy()
+    try:
+        if os.path.exists(_SETTINGS_FILE):
+            with open(_SETTINGS_FILE, 'r') as f:
+                saved = json.load(f)
+                # Only update keys that exist in defaults (ignore obsolete keys)
+                for key in settings:
+                    if key in saved:
+                        settings[key] = saved[key]
+    except Exception:
+        pass  # Use defaults if file can't be read
+    return settings
+
+
+def _save_settings():
+    """Save current settings to file."""
+    try:
+        with open(_SETTINGS_FILE, 'w') as f:
+            json.dump(_SETTINGS, f, indent=2)
+    except Exception:
+        pass  # Silently fail if can't write
+
+
+# Load settings on module import
+_SETTINGS = _load_settings()
 
 
 class LayoutToolsDialog(wx.Dialog):
@@ -172,7 +207,8 @@ class RotatePanel(wx.Panel):
         
         # Save settings
         _SETTINGS['rotate_angle'] = angle
-        
+        _save_settings()
+
         # Get all selected items
         selected_items = []
         
@@ -378,26 +414,41 @@ class ChainRoutePanel(wx.Panel):
             self.via_layer_choice.SetStringSelection("B.Cu")
         via_hbox.Add(self.via_layer_choice, flag=wx.RIGHT, border=10)
 
-        via_hbox.Add(wx.StaticText(self, label="Via:"), flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
+        via_hbox.Add(wx.StaticText(self, label="Via Pad:"), flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
         self.via_size_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['chain_via_size']), min=0.2, max=3.0,
-                                                initial=_SETTINGS['chain_via_size'], inc=0.1, size=(60, -1))
+                                                initial=_SETTINGS['chain_via_size'], inc=0.1, size=(80, -1))
         self.via_size_ctrl.SetDigits(2)
-        via_hbox.Add(self.via_size_ctrl, flag=wx.RIGHT, border=5)
+        via_hbox.Add(self.via_size_ctrl, flag=wx.RIGHT, border=8)
 
-        via_hbox.Add(wx.StaticText(self, label="/"), flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
+        via_hbox.Add(wx.StaticText(self, label="Via Hole:"), flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
         self.via_drill_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['chain_via_drill']), min=0.1, max=2.0,
-                                                 initial=_SETTINGS['chain_via_drill'], inc=0.1, size=(60, -1))
+                                                 initial=_SETTINGS['chain_via_drill'], inc=0.1, size=(80, -1))
         self.via_drill_ctrl.SetDigits(2)
-        via_hbox.Add(self.via_drill_ctrl, flag=wx.RIGHT, border=10)
+        via_hbox.Add(self.via_drill_ctrl, flag=wx.RIGHT, border=8)
 
         via_hbox.Add(wx.StaticText(self, label="Stub:"), flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
         self.stub_length_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['chain_stub_length']), min=0.1, max=10.0,
-                                                   initial=_SETTINGS['chain_stub_length'], inc=0.25, size=(60, -1))
+                                                   initial=_SETTINGS['chain_stub_length'], inc=0.25, size=(80, -1))
         self.stub_length_ctrl.SetDigits(2)
         via_hbox.Add(self.stub_length_ctrl)
         via_hbox.Add(wx.StaticText(self, label="mm"), flag=wx.ALIGN_CENTER_VERTICAL | wx.LEFT, border=3)
 
         vbox.Add(via_hbox, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=25)
+
+        # Max distance setting
+        hbox_max = wx.BoxSizer(wx.HORIZONTAL)
+        hbox_max.Add(wx.StaticText(self, label="Max Route Distance (mm):"),
+                    flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
+        self.max_distance_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['chain_max_distance']),
+                                                    min=1.0, max=500.0,
+                                                    initial=_SETTINGS['chain_max_distance'], inc=5.0, size=(80, -1))
+        self.max_distance_ctrl.SetDigits(1)
+        hbox_max.Add(self.max_distance_ctrl)
+        vbox.Add(hbox_max, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        help_max = wx.StaticText(self, label="(Skip routing if distance exceeds this value)")
+        help_max.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(help_max, flag=wx.LEFT | wx.TOP, border=10)
 
         # Create tracks button
         route_btn = wx.Button(self, label="Create Chain Tracks")
@@ -420,6 +471,7 @@ class ChainRoutePanel(wx.Panel):
         via_size = self.via_size_ctrl.GetValue()
         via_drill = self.via_drill_ctrl.GetValue()
         stub_length = self.stub_length_ctrl.GetValue()
+        max_distance = self.max_distance_ctrl.GetValue()
 
         # Save settings
         _SETTINGS['chain_ref_prefix'] = ref_prefix
@@ -428,11 +480,13 @@ class ChainRoutePanel(wx.Panel):
         _SETTINGS['chain_track_width'] = track_width
         _SETTINGS['chain_layer'] = layer_name
         _SETTINGS['chain_use_45deg'] = use_45deg
+        _SETTINGS['chain_max_distance'] = max_distance
         _SETTINGS['chain_use_via_transition'] = use_via_transition
         _SETTINGS['chain_via_layer'] = via_layer_name
         _SETTINGS['chain_via_size'] = via_size
         _SETTINGS['chain_via_drill'] = via_drill
         _SETTINGS['chain_stub_length'] = stub_length
+        _save_settings()
 
         # Find all footprints matching the prefix
         matching_footprints = []
@@ -473,11 +527,13 @@ class ChainRoutePanel(wx.Panel):
         # Create tracks between consecutive LEDs
         tracks_created = 0
         vias_created = 0
+        skipped_distance = 0
         errors = []
         width_iu = pcbnew.FromMM(track_width)
         via_size_iu = pcbnew.FromMM(via_size)
         via_drill_iu = pcbnew.FromMM(via_drill)
         stub_length_iu = pcbnew.FromMM(stub_length)
+        max_distance_iu = pcbnew.FromMM(max_distance)
 
         for i in range(len(matching_footprints) - 1):
             num1, fp1 = matching_footprints[i]
@@ -496,6 +552,14 @@ class ChainRoutePanel(wx.Panel):
             start_pos = out_pad.GetPosition()
             end_pos = in_pad.GetPosition()
             net = out_pad.GetNet()
+
+            # Check distance
+            dx = end_pos.x - start_pos.x
+            dy = end_pos.y - start_pos.y
+            distance = (dx * dx + dy * dy) ** 0.5
+            if distance > max_distance_iu:
+                skipped_distance += 1
+                continue
 
             if use_via_transition:
                 # Create via transition route
@@ -525,6 +589,8 @@ class ChainRoutePanel(wx.Panel):
             msg = f"Created {tracks_created} track segments"
             if vias_created > 0:
                 msg += f" and {vias_created} vias"
+            if skipped_distance > 0:
+                msg += f" (skipped {skipped_distance} routes exceeding {max_distance}mm)"
             msg += f".\n\nErrors:\n" + "\n".join(errors[:5])
             if len(errors) > 5:
                 msg += f"\n... and {len(errors) - 5} more errors"
@@ -533,6 +599,8 @@ class ChainRoutePanel(wx.Panel):
             msg = f"Successfully created {tracks_created} track segments"
             if vias_created > 0:
                 msg += f" and {vias_created} vias"
+            if skipped_distance > 0:
+                msg += f" (skipped {skipped_distance} routes exceeding {max_distance}mm)"
             msg += f" between {len(matching_footprints)} LEDs!"
             wx.MessageBox(msg, "Success", wx.OK | wx.ICON_INFORMATION)
 
@@ -927,10 +995,11 @@ class AddViasPanel(wx.Panel):
         _SETTINGS['via_ref_prefix'] = ref_prefix
         _SETTINGS['via_pad_num'] = pad_num
         _SETTINGS['via_selected_only'] = selected_only
-        
+        _save_settings()
+
         # Find all matching pads
         matching_pads = self._find_matching_pads(board, ref_prefix, pad_num, selected_only)
-        
+
         if not matching_pads:
             wx.MessageBox("No matching pads found!", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -988,6 +1057,7 @@ class AddViasPanel(wx.Panel):
         _SETTINGS['via_auto_route'] = auto_route
         _SETTINGS['via_track_width'] = track_width
         _SETTINGS['via_track_layer'] = track_layer_name
+        _save_settings()
 
         # Validate drill size
         if via_drill >= via_size:
@@ -1148,7 +1218,8 @@ class SelectPadsPanel(wx.Panel):
         _SETTINGS['select_ref_prefix'] = ref_prefix
         _SETTINGS['select_pad_num'] = pad_num
         _SETTINGS['select_mode_selected'] = selected_footprints_only
-        
+        _save_settings()
+
         # Find and select all matching pads
         pads_selected = 0
         
@@ -1322,7 +1393,8 @@ class PinLabelPanel(wx.Panel):
         layer_choices = ["F.SilkS", "B.SilkS", "F.Fab", "B.Fab"]
         _SETTINGS['pin_label_layer'] = layer_choices[self.layer_choice.GetSelection()]
         _SETTINGS['pin_label_rotation'] = self.rotation_ctrl.GetValue()
-        
+        _save_settings()
+
         # Get settings
         h_align = self.h_align_choice.GetSelection()  # 0=Left, 1=Center, 2=Right
         v_align = self.v_align_choice.GetSelection()  # 0=Top, 1=Middle, 2=Bottom
@@ -1599,6 +1671,7 @@ class RelativeOffsetPanel(wx.Panel):
         _SETTINGS['offset_target_pattern'] = target_pattern
         _SETTINGS['offset_x'] = x_offset_mm
         _SETTINGS['offset_y'] = y_offset_mm
+        _save_settings()
 
         # Find matching pairs
         pairs = self._find_matching_pairs(source_pattern, target_pattern)
@@ -1855,6 +1928,7 @@ class PadToPadRoutePanel(wx.Panel):
         _SETTINGS['p2p_via_size'] = via_size
         _SETTINGS['p2p_via_drill'] = via_drill
         _SETTINGS['p2p_stub_length'] = stub_length
+        _save_settings()
 
         # Find matching pairs
         pairs = self._find_matching_pairs(source_pattern, target_pattern)
@@ -2250,6 +2324,7 @@ class UnroutePadsPanel(wx.Panel):
         # Save settings
         _SETTINGS['unroute_pattern'] = pattern
         _SETTINGS['unroute_pad'] = pad_num
+        _save_settings()
 
         footprints = self._find_matching_footprints(pattern)
 
@@ -2278,6 +2353,7 @@ class UnroutePadsPanel(wx.Panel):
         _SETTINGS['unroute_pattern'] = pattern
         _SETTINGS['unroute_pad'] = pad_num
         _SETTINGS['unroute_follow_traces'] = follow_traces
+        _save_settings()
 
         footprints = self._find_matching_footprints(pattern)
 
