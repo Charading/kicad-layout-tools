@@ -68,8 +68,8 @@ class LayoutToolsDialog(wx.Dialog):
         wx.Dialog.__init__(self, parent, title="Layout Tools", size=(650, 600),
                           style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         
-        # Create notebook (tabbed interface)
-        notebook = wx.Notebook(self)
+        # Create notebook (tabbed interface) with multi-row tabs
+        notebook = wx.Notebook(self, style=wx.NB_MULTILINE)
         
         # Add tabs
         self.rotate_panel = RotatePanel(notebook)
