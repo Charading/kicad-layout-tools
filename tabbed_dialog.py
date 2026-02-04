@@ -788,67 +788,38 @@ class ChainRoutePanel(wx.Panel):
                 board.Add(track)
                 return (1, 0, [track])
 
-        # Calculate direction unit vector
-        if total_dist > 0:
-            dir_x = dx / total_dist
-            dir_y = dy / total_dist
+        # Calculate via positions - stub comes straight out from pad center (perpendicular)
+        # If LEDs are more horizontal, stub goes vertical; if more vertical, stub goes horizontal
+        if abs(dx) >= abs(dy):
+            # More horizontal arrangement - stubs go vertical (up/down)
+            via1_y_offset = stub_length if dy >= 0 else -stub_length
+            via1_x = start_pos.x
+            via1_y = start_pos.y + via1_y_offset
+            via2_x = end_pos.x
+            via2_y = end_pos.y - via1_y_offset
         else:
-            dir_x, dir_y = 1, 0
+            # More vertical arrangement - stubs go horizontal (left/right)
+            via1_x_offset = stub_length if dx >= 0 else -stub_length
+            via1_x = start_pos.x + via1_x_offset
+            via1_y = start_pos.y
+            via2_x = end_pos.x - via1_x_offset
+            via2_y = end_pos.y
 
-        # Calculate via positions (stub_length from each end)
-        via1_x = start_pos.x + dir_x * stub_length
-        via1_y = start_pos.y + dir_y * stub_length
         via1_pos = pcbnew.VECTOR2I(int(via1_x), int(via1_y))
-
-        via2_x = end_pos.x - dir_x * stub_length
-        via2_y = end_pos.y - dir_y * stub_length
         via2_pos = pcbnew.VECTOR2I(int(via2_x), int(via2_y))
 
         tracks_created = 0
 
-        # Create first stub on start layer: diagonal from pad, then straight to via (arrive at 90°)
-        stub1_dx = via1_pos.x - start_pos.x
-        stub1_dy = via1_pos.y - start_pos.y
-        if use_45deg and stub1_dx != 0 and stub1_dy != 0 and abs(stub1_dx) != abs(stub1_dy):
-            # 2-segment routing: diagonal first, then straight to via
-            diag_len = min(abs(stub1_dx), abs(stub1_dy))
-            # Mid point is after diagonal (covers diag_len in both x and y)
-            stub1_mid_x = start_pos.x + (diag_len if stub1_dx > 0 else -diag_len)
-            stub1_mid_y = start_pos.y + (diag_len if stub1_dy > 0 else -diag_len)
-            stub1_mid_pos = pcbnew.VECTOR2I(int(stub1_mid_x), int(stub1_mid_y))
-
-            # First segment: diagonal from pad
-            track1a = pcbnew.PCB_TRACK(board)
-            track1a.SetStart(start_pos)
-            track1a.SetEnd(stub1_mid_pos)
-            track1a.SetWidth(width)
-            track1a.SetLayer(layer_id)
-            track1a.SetNet(net)
-            board.Add(track1a)
-            items.append(track1a)
-            tracks_created += 1
-
-            # Second segment: straight to via (90°)
-            track1b = pcbnew.PCB_TRACK(board)
-            track1b.SetStart(stub1_mid_pos)
-            track1b.SetEnd(via1_pos)
-            track1b.SetWidth(width)
-            track1b.SetLayer(layer_id)
-            track1b.SetNet(net)
-            board.Add(track1b)
-            items.append(track1b)
-            tracks_created += 1
-        else:
-            # Direct or already aligned stub
-            track1 = pcbnew.PCB_TRACK(board)
-            track1.SetStart(start_pos)
-            track1.SetEnd(via1_pos)
-            track1.SetWidth(width)
-            track1.SetLayer(layer_id)
-            track1.SetNet(net)
-            board.Add(track1)
-            items.append(track1)
-            tracks_created += 1
+        # Create first stub: straight out from pad center (purely horizontal or vertical)
+        track1 = pcbnew.PCB_TRACK(board)
+        track1.SetStart(start_pos)
+        track1.SetEnd(via1_pos)
+        track1.SetWidth(width)
+        track1.SetLayer(layer_id)
+        track1.SetNet(net)
+        board.Add(track1)
+        items.append(track1)
+        tracks_created += 1
 
         # Create first via
         via1 = pcbnew.PCB_VIA(board)
@@ -953,54 +924,16 @@ class ChainRoutePanel(wx.Panel):
         board.Add(via2)
         items.append(via2)
 
-        # Create last stub: straight from via (90°), then diagonal to pad
-        stub2_dx = end_pos.x - via2_pos.x
-        stub2_dy = end_pos.y - via2_pos.y
-        if use_45deg and stub2_dx != 0 and stub2_dy != 0 and abs(stub2_dx) != abs(stub2_dy):
-            # 2-segment routing: straight from via, then diagonal to pad
-            diag_len = min(abs(stub2_dx), abs(stub2_dy))
-            straight_len = abs(abs(stub2_dx) - abs(stub2_dy))
-            # Mid point is after straight section (straight from via)
-            if abs(stub2_dx) > abs(stub2_dy):
-                stub2_mid_x = via2_pos.x + (straight_len if stub2_dx > 0 else -straight_len)
-                stub2_mid_y = via2_pos.y
-            else:
-                stub2_mid_x = via2_pos.x
-                stub2_mid_y = via2_pos.y + (straight_len if stub2_dy > 0 else -straight_len)
-            stub2_mid_pos = pcbnew.VECTOR2I(int(stub2_mid_x), int(stub2_mid_y))
-
-            # First segment: straight from via (90°)
-            track3a = pcbnew.PCB_TRACK(board)
-            track3a.SetStart(via2_pos)
-            track3a.SetEnd(stub2_mid_pos)
-            track3a.SetWidth(width)
-            track3a.SetLayer(layer_id)
-            track3a.SetNet(net)
-            board.Add(track3a)
-            items.append(track3a)
-            tracks_created += 1
-
-            # Second segment: diagonal to pad
-            track3b = pcbnew.PCB_TRACK(board)
-            track3b.SetStart(stub2_mid_pos)
-            track3b.SetEnd(end_pos)
-            track3b.SetWidth(width)
-            track3b.SetLayer(layer_id)
-            track3b.SetNet(net)
-            board.Add(track3b)
-            items.append(track3b)
-            tracks_created += 1
-        else:
-            # Direct or already aligned stub
-            track3 = pcbnew.PCB_TRACK(board)
-            track3.SetStart(via2_pos)
-            track3.SetEnd(end_pos)
-            track3.SetWidth(width)
-            track3.SetLayer(layer_id)
-            track3.SetNet(net)
-            board.Add(track3)
-            items.append(track3)
-            tracks_created += 1
+        # Create last stub: straight from via to pad center (perpendicular)
+        track3 = pcbnew.PCB_TRACK(board)
+        track3.SetStart(via2_pos)
+        track3.SetEnd(end_pos)
+        track3.SetWidth(width)
+        track3.SetLayer(layer_id)
+        track3.SetNet(net)
+        board.Add(track3)
+        items.append(track3)
+        tracks_created += 1
 
         return (tracks_created, 2, items)
 
