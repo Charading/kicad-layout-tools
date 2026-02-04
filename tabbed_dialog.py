@@ -55,7 +55,8 @@ _SETTINGS = {
 
 class LayoutToolsDialog(wx.Dialog):
     def __init__(self, parent):
-        wx.Dialog.__init__(self, parent, title="Layout Tools", size=(520, 580))
+        wx.Dialog.__init__(self, parent, title="Layout Tools", size=(650, 600),
+                          style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         
         # Create notebook (tabbed interface)
         notebook = wx.Notebook(self)
