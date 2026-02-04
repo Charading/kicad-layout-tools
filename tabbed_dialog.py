@@ -806,22 +806,18 @@ class ChainRoutePanel(wx.Panel):
 
         tracks_created = 0
 
-        # Create first stub on start layer (use 45/90 routing if enabled)
+        # Create first stub on start layer: diagonal from pad, then straight to via (arrive at 90°)
         stub1_dx = via1_pos.x - start_pos.x
         stub1_dy = via1_pos.y - start_pos.y
         if use_45deg and stub1_dx != 0 and stub1_dy != 0 and abs(stub1_dx) != abs(stub1_dy):
-            # Need 2-segment 45/90 routing for stub
+            # 2-segment routing: diagonal first, then straight to via
             diag_len = min(abs(stub1_dx), abs(stub1_dy))
-            if abs(stub1_dx) > abs(stub1_dy):
-                straight_len = abs(stub1_dx) - diag_len
-                stub1_mid_x = start_pos.x + (straight_len if stub1_dx > 0 else -straight_len)
-                stub1_mid_y = start_pos.y
-            else:
-                straight_len = abs(stub1_dy) - diag_len
-                stub1_mid_x = start_pos.x
-                stub1_mid_y = start_pos.y + (straight_len if stub1_dy > 0 else -straight_len)
+            # Mid point is after diagonal (covers diag_len in both x and y)
+            stub1_mid_x = start_pos.x + (diag_len if stub1_dx > 0 else -diag_len)
+            stub1_mid_y = start_pos.y + (diag_len if stub1_dy > 0 else -diag_len)
             stub1_mid_pos = pcbnew.VECTOR2I(int(stub1_mid_x), int(stub1_mid_y))
 
+            # First segment: diagonal from pad
             track1a = pcbnew.PCB_TRACK(board)
             track1a.SetStart(start_pos)
             track1a.SetEnd(stub1_mid_pos)
@@ -832,6 +828,7 @@ class ChainRoutePanel(wx.Panel):
             items.append(track1a)
             tracks_created += 1
 
+            # Second segment: straight to via (90°)
             track1b = pcbnew.PCB_TRACK(board)
             track1b.SetStart(stub1_mid_pos)
             track1b.SetEnd(via1_pos)
@@ -864,27 +861,37 @@ class ChainRoutePanel(wx.Panel):
         items.append(via1)
 
         # Create middle track on via layer (with optional 45° routing)
+        # For 45° mode: straight from via1, diagonal in middle, straight to via2
         if use_45deg:
-            # Use simple 2-segment 45° routing for middle section
             mid_dx = via2_pos.x - via1_pos.x
             mid_dy = via2_pos.y - via1_pos.y
 
             if mid_dx != 0 and mid_dy != 0 and abs(mid_dx) != abs(mid_dy):
+                # Need 3-segment routing: straight -> diagonal -> straight
                 diag_len = min(abs(mid_dx), abs(mid_dy))
+                straight_len = abs(abs(mid_dx) - abs(mid_dy)) / 2  # Split straight portion
+
+                # Calculate mid points for 3-segment path
                 if abs(mid_dx) > abs(mid_dy):
-                    straight_len = abs(mid_dx) - diag_len
-                    mid_x = via1_pos.x + (straight_len if mid_dx > 0 else -straight_len)
-                    mid_y = via1_pos.y
+                    # More horizontal: straight-x, diagonal, straight-x
+                    mid1_x = via1_pos.x + (straight_len if mid_dx > 0 else -straight_len)
+                    mid1_y = via1_pos.y
+                    mid2_x = mid1_x + (diag_len if mid_dx > 0 else -diag_len)
+                    mid2_y = mid1_y + (diag_len if mid_dy > 0 else -diag_len)
                 else:
-                    straight_len = abs(mid_dy) - diag_len
-                    mid_x = via1_pos.x
-                    mid_y = via1_pos.y + (straight_len if mid_dy > 0 else -straight_len)
+                    # More vertical: straight-y, diagonal, straight-y
+                    mid1_x = via1_pos.x
+                    mid1_y = via1_pos.y + (straight_len if mid_dy > 0 else -straight_len)
+                    mid2_x = mid1_x + (diag_len if mid_dx > 0 else -diag_len)
+                    mid2_y = mid1_y + (diag_len if mid_dy > 0 else -diag_len)
 
-                mid_pos = pcbnew.VECTOR2I(int(mid_x), int(mid_y))
+                mid1_pos = pcbnew.VECTOR2I(int(mid1_x), int(mid1_y))
+                mid2_pos = pcbnew.VECTOR2I(int(mid2_x), int(mid2_y))
 
+                # First segment: straight from via1 (90°)
                 track2a = pcbnew.PCB_TRACK(board)
                 track2a.SetStart(via1_pos)
-                track2a.SetEnd(mid_pos)
+                track2a.SetEnd(mid1_pos)
                 track2a.SetWidth(width)
                 track2a.SetLayer(via_layer_id)
                 track2a.SetNet(net)
@@ -892,17 +899,29 @@ class ChainRoutePanel(wx.Panel):
                 items.append(track2a)
                 tracks_created += 1
 
+                # Second segment: diagonal in middle (45°)
                 track2b = pcbnew.PCB_TRACK(board)
-                track2b.SetStart(mid_pos)
-                track2b.SetEnd(via2_pos)
+                track2b.SetStart(mid1_pos)
+                track2b.SetEnd(mid2_pos)
                 track2b.SetWidth(width)
                 track2b.SetLayer(via_layer_id)
                 track2b.SetNet(net)
                 board.Add(track2b)
                 items.append(track2b)
                 tracks_created += 1
+
+                # Third segment: straight to via2 (90°)
+                track2c = pcbnew.PCB_TRACK(board)
+                track2c.SetStart(mid2_pos)
+                track2c.SetEnd(via2_pos)
+                track2c.SetWidth(width)
+                track2c.SetLayer(via_layer_id)
+                track2c.SetNet(net)
+                board.Add(track2c)
+                items.append(track2c)
+                tracks_created += 1
             else:
-                # Already aligned, single track
+                # Already aligned (0°, 45°, or 90°), single track
                 track2 = pcbnew.PCB_TRACK(board)
                 track2.SetStart(via1_pos)
                 track2.SetEnd(via2_pos)
@@ -934,22 +953,23 @@ class ChainRoutePanel(wx.Panel):
         board.Add(via2)
         items.append(via2)
 
-        # Create last stub on start layer (use 45/90 routing if enabled)
+        # Create last stub: straight from via (90°), then diagonal to pad
         stub2_dx = end_pos.x - via2_pos.x
         stub2_dy = end_pos.y - via2_pos.y
         if use_45deg and stub2_dx != 0 and stub2_dy != 0 and abs(stub2_dx) != abs(stub2_dy):
-            # Need 2-segment 45/90 routing for stub
+            # 2-segment routing: straight from via, then diagonal to pad
             diag_len = min(abs(stub2_dx), abs(stub2_dy))
+            straight_len = abs(abs(stub2_dx) - abs(stub2_dy))
+            # Mid point is after straight section (straight from via)
             if abs(stub2_dx) > abs(stub2_dy):
-                straight_len = abs(stub2_dx) - diag_len
                 stub2_mid_x = via2_pos.x + (straight_len if stub2_dx > 0 else -straight_len)
                 stub2_mid_y = via2_pos.y
             else:
-                straight_len = abs(stub2_dy) - diag_len
                 stub2_mid_x = via2_pos.x
                 stub2_mid_y = via2_pos.y + (straight_len if stub2_dy > 0 else -straight_len)
             stub2_mid_pos = pcbnew.VECTOR2I(int(stub2_mid_x), int(stub2_mid_y))
 
+            # First segment: straight from via (90°)
             track3a = pcbnew.PCB_TRACK(board)
             track3a.SetStart(via2_pos)
             track3a.SetEnd(stub2_mid_pos)
@@ -960,6 +980,7 @@ class ChainRoutePanel(wx.Panel):
             items.append(track3a)
             tracks_created += 1
 
+            # Second segment: diagonal to pad
             track3b = pcbnew.PCB_TRACK(board)
             track3b.SetStart(stub2_mid_pos)
             track3b.SetEnd(end_pos)
@@ -2341,22 +2362,18 @@ class PadToPadRoutePanel(wx.Panel):
 
         tracks_created = 0
 
-        # Create first stub on start layer (use 45/90 routing if enabled)
+        # Create first stub on start layer: diagonal from pad, then straight to via (arrive at 90°)
         stub1_dx = via1_pos.x - start_pos.x
         stub1_dy = via1_pos.y - start_pos.y
         if use_45deg and stub1_dx != 0 and stub1_dy != 0 and abs(stub1_dx) != abs(stub1_dy):
-            # Need 2-segment 45/90 routing for stub
+            # 2-segment routing: diagonal first, then straight to via
             diag_len = min(abs(stub1_dx), abs(stub1_dy))
-            if abs(stub1_dx) > abs(stub1_dy):
-                straight_len = abs(stub1_dx) - diag_len
-                stub1_mid_x = start_pos.x + (straight_len if stub1_dx > 0 else -straight_len)
-                stub1_mid_y = start_pos.y
-            else:
-                straight_len = abs(stub1_dy) - diag_len
-                stub1_mid_x = start_pos.x
-                stub1_mid_y = start_pos.y + (straight_len if stub1_dy > 0 else -straight_len)
+            # Mid point is after diagonal (covers diag_len in both x and y)
+            stub1_mid_x = start_pos.x + (diag_len if stub1_dx > 0 else -diag_len)
+            stub1_mid_y = start_pos.y + (diag_len if stub1_dy > 0 else -diag_len)
             stub1_mid_pos = pcbnew.VECTOR2I(int(stub1_mid_x), int(stub1_mid_y))
 
+            # First segment: diagonal from pad
             track1a = pcbnew.PCB_TRACK(board)
             track1a.SetStart(start_pos)
             track1a.SetEnd(stub1_mid_pos)
@@ -2367,6 +2384,7 @@ class PadToPadRoutePanel(wx.Panel):
             items.append(track1a)
             tracks_created += 1
 
+            # Second segment: straight to via (90°)
             track1b = pcbnew.PCB_TRACK(board)
             track1b.SetStart(stub1_mid_pos)
             track1b.SetEnd(via1_pos)
@@ -2399,27 +2417,37 @@ class PadToPadRoutePanel(wx.Panel):
         items.append(via1)
 
         # Create middle track on via layer (with optional 45° routing)
+        # For 45° mode: straight from via1, diagonal in middle, straight to via2
         if use_45deg:
-            # Use simple 2-segment 45° routing for middle section
             mid_dx = via2_pos.x - via1_pos.x
             mid_dy = via2_pos.y - via1_pos.y
 
             if mid_dx != 0 and mid_dy != 0 and abs(mid_dx) != abs(mid_dy):
+                # Need 3-segment routing: straight -> diagonal -> straight
                 diag_len = min(abs(mid_dx), abs(mid_dy))
+                straight_len = abs(abs(mid_dx) - abs(mid_dy)) / 2  # Split straight portion
+
+                # Calculate mid points for 3-segment path
                 if abs(mid_dx) > abs(mid_dy):
-                    straight_len = abs(mid_dx) - diag_len
-                    mid_x = via1_pos.x + (straight_len if mid_dx > 0 else -straight_len)
-                    mid_y = via1_pos.y
+                    # More horizontal: straight-x, diagonal, straight-x
+                    mid1_x = via1_pos.x + (straight_len if mid_dx > 0 else -straight_len)
+                    mid1_y = via1_pos.y
+                    mid2_x = mid1_x + (diag_len if mid_dx > 0 else -diag_len)
+                    mid2_y = mid1_y + (diag_len if mid_dy > 0 else -diag_len)
                 else:
-                    straight_len = abs(mid_dy) - diag_len
-                    mid_x = via1_pos.x
-                    mid_y = via1_pos.y + (straight_len if mid_dy > 0 else -straight_len)
+                    # More vertical: straight-y, diagonal, straight-y
+                    mid1_x = via1_pos.x
+                    mid1_y = via1_pos.y + (straight_len if mid_dy > 0 else -straight_len)
+                    mid2_x = mid1_x + (diag_len if mid_dx > 0 else -diag_len)
+                    mid2_y = mid1_y + (diag_len if mid_dy > 0 else -diag_len)
 
-                mid_pos = pcbnew.VECTOR2I(int(mid_x), int(mid_y))
+                mid1_pos = pcbnew.VECTOR2I(int(mid1_x), int(mid1_y))
+                mid2_pos = pcbnew.VECTOR2I(int(mid2_x), int(mid2_y))
 
+                # First segment: straight from via1 (90°)
                 track2a = pcbnew.PCB_TRACK(board)
                 track2a.SetStart(via1_pos)
-                track2a.SetEnd(mid_pos)
+                track2a.SetEnd(mid1_pos)
                 track2a.SetWidth(width)
                 track2a.SetLayer(via_layer_id)
                 track2a.SetNet(net)
@@ -2427,17 +2455,29 @@ class PadToPadRoutePanel(wx.Panel):
                 items.append(track2a)
                 tracks_created += 1
 
+                # Second segment: diagonal in middle (45°)
                 track2b = pcbnew.PCB_TRACK(board)
-                track2b.SetStart(mid_pos)
-                track2b.SetEnd(via2_pos)
+                track2b.SetStart(mid1_pos)
+                track2b.SetEnd(mid2_pos)
                 track2b.SetWidth(width)
                 track2b.SetLayer(via_layer_id)
                 track2b.SetNet(net)
                 board.Add(track2b)
                 items.append(track2b)
                 tracks_created += 1
+
+                # Third segment: straight to via2 (90°)
+                track2c = pcbnew.PCB_TRACK(board)
+                track2c.SetStart(mid2_pos)
+                track2c.SetEnd(via2_pos)
+                track2c.SetWidth(width)
+                track2c.SetLayer(via_layer_id)
+                track2c.SetNet(net)
+                board.Add(track2c)
+                items.append(track2c)
+                tracks_created += 1
             else:
-                # Already aligned, single track
+                # Already aligned (0°, 45°, or 90°), single track
                 track2 = pcbnew.PCB_TRACK(board)
                 track2.SetStart(via1_pos)
                 track2.SetEnd(via2_pos)
@@ -2469,22 +2509,23 @@ class PadToPadRoutePanel(wx.Panel):
         board.Add(via2)
         items.append(via2)
 
-        # Create last stub on start layer (use 45/90 routing if enabled)
+        # Create last stub: straight from via (90°), then diagonal to pad
         stub2_dx = end_pos.x - via2_pos.x
         stub2_dy = end_pos.y - via2_pos.y
         if use_45deg and stub2_dx != 0 and stub2_dy != 0 and abs(stub2_dx) != abs(stub2_dy):
-            # Need 2-segment 45/90 routing for stub
+            # 2-segment routing: straight from via, then diagonal to pad
             diag_len = min(abs(stub2_dx), abs(stub2_dy))
+            straight_len = abs(abs(stub2_dx) - abs(stub2_dy))
+            # Mid point is after straight section (straight from via)
             if abs(stub2_dx) > abs(stub2_dy):
-                straight_len = abs(stub2_dx) - diag_len
                 stub2_mid_x = via2_pos.x + (straight_len if stub2_dx > 0 else -straight_len)
                 stub2_mid_y = via2_pos.y
             else:
-                straight_len = abs(stub2_dy) - diag_len
                 stub2_mid_x = via2_pos.x
                 stub2_mid_y = via2_pos.y + (straight_len if stub2_dy > 0 else -straight_len)
             stub2_mid_pos = pcbnew.VECTOR2I(int(stub2_mid_x), int(stub2_mid_y))
 
+            # First segment: straight from via (90°)
             track3a = pcbnew.PCB_TRACK(board)
             track3a.SetStart(via2_pos)
             track3a.SetEnd(stub2_mid_pos)
@@ -2495,6 +2536,7 @@ class PadToPadRoutePanel(wx.Panel):
             items.append(track3a)
             tracks_created += 1
 
+            # Second segment: diagonal to pad
             track3b = pcbnew.PCB_TRACK(board)
             track3b.SetStart(stub2_mid_pos)
             track3b.SetEnd(end_pos)
