@@ -11,18 +11,18 @@ _SETTINGS_FILE = os.path.join(os.path.dirname(__file__), 'layout_tools_settings.
 # Default settings
 _DEFAULT_SETTINGS = {
     'rotate_angle': 90.0,
-    'chain_ref_prefix': 'D',
-    'chain_output_pad': '1',
+    'chain_ref_prefix': 'LED',
+    'chain_output_pad': '2',
     'chain_input_pad': '3',
-    'chain_track_width': 0.25,
-    'chain_layer': 'F.Cu',
+    'chain_track_width': 0.20,
+    'chain_layer': 'B.Cu',
     'chain_use_45deg': True,
     'chain_max_distance': 30.0,
-    'chain_use_via_transition': False,
-    'chain_via_layer': 'B.Cu',
-    'chain_via_size': 0.8,
-    'chain_via_drill': 0.4,
-    'chain_stub_length': 1.0,
+    'chain_use_via_transition': True,
+    'chain_via_layer': 'F.Cu',
+    'chain_via_size': 0.45,
+    'chain_via_drill': 0.20,
+    'chain_stub_length': 1.50,
     'via_ref_prefix': 'D',
     'via_pad_num': '2',
     'via_size': 0.8,
@@ -465,7 +465,38 @@ class ChainRoutePanel(wx.Panel):
         vbox.Add(btn_hbox, flag=wx.ALIGN_CENTER | wx.TOP, border=20)
 
         self.SetSizer(vbox)
-    
+
+        # Bind change events to save settings on change
+        self.ref_prefix_ctrl.Bind(wx.EVT_TEXT, self._on_setting_change)
+        self.output_pad_ctrl.Bind(wx.EVT_TEXT, self._on_setting_change)
+        self.input_pad_ctrl.Bind(wx.EVT_TEXT, self._on_setting_change)
+        self.track_width_ctrl.Bind(wx.EVT_SPINCTRLDOUBLE, self._on_setting_change)
+        self.layer_choice.Bind(wx.EVT_CHOICE, self._on_setting_change)
+        self.use_45deg_check.Bind(wx.EVT_CHECKBOX, self._on_setting_change)
+        self.use_via_check.Bind(wx.EVT_CHECKBOX, self._on_setting_change)
+        self.via_layer_choice.Bind(wx.EVT_CHOICE, self._on_setting_change)
+        self.via_size_ctrl.Bind(wx.EVT_SPINCTRLDOUBLE, self._on_setting_change)
+        self.via_drill_ctrl.Bind(wx.EVT_SPINCTRLDOUBLE, self._on_setting_change)
+        self.stub_length_ctrl.Bind(wx.EVT_SPINCTRLDOUBLE, self._on_setting_change)
+        self.max_distance_ctrl.Bind(wx.EVT_SPINCTRLDOUBLE, self._on_setting_change)
+
+    def _on_setting_change(self, event):
+        """Save settings whenever a control value changes."""
+        _SETTINGS['chain_ref_prefix'] = self.ref_prefix_ctrl.GetValue()
+        _SETTINGS['chain_output_pad'] = self.output_pad_ctrl.GetValue()
+        _SETTINGS['chain_input_pad'] = self.input_pad_ctrl.GetValue()
+        _SETTINGS['chain_track_width'] = self.track_width_ctrl.GetValue()
+        _SETTINGS['chain_layer'] = self.layer_choice.GetStringSelection()
+        _SETTINGS['chain_use_45deg'] = self.use_45deg_check.GetValue()
+        _SETTINGS['chain_use_via_transition'] = self.use_via_check.GetValue()
+        _SETTINGS['chain_via_layer'] = self.via_layer_choice.GetStringSelection()
+        _SETTINGS['chain_via_size'] = self.via_size_ctrl.GetValue()
+        _SETTINGS['chain_via_drill'] = self.via_drill_ctrl.GetValue()
+        _SETTINGS['chain_stub_length'] = self.stub_length_ctrl.GetValue()
+        _SETTINGS['chain_max_distance'] = self.max_distance_ctrl.GetValue()
+        _save_settings()
+        event.Skip()
+
     def OnChainRoute(self, event):
         board = pcbnew.GetBoard()
 
@@ -775,16 +806,52 @@ class ChainRoutePanel(wx.Panel):
 
         tracks_created = 0
 
-        # Create first stub on start layer
-        track1 = pcbnew.PCB_TRACK(board)
-        track1.SetStart(start_pos)
-        track1.SetEnd(via1_pos)
-        track1.SetWidth(width)
-        track1.SetLayer(layer_id)
-        track1.SetNet(net)
-        board.Add(track1)
-        items.append(track1)
-        tracks_created += 1
+        # Create first stub on start layer (use 45/90 routing if enabled)
+        stub1_dx = via1_pos.x - start_pos.x
+        stub1_dy = via1_pos.y - start_pos.y
+        if use_45deg and stub1_dx != 0 and stub1_dy != 0 and abs(stub1_dx) != abs(stub1_dy):
+            # Need 2-segment 45/90 routing for stub
+            diag_len = min(abs(stub1_dx), abs(stub1_dy))
+            if abs(stub1_dx) > abs(stub1_dy):
+                straight_len = abs(stub1_dx) - diag_len
+                stub1_mid_x = start_pos.x + (straight_len if stub1_dx > 0 else -straight_len)
+                stub1_mid_y = start_pos.y
+            else:
+                straight_len = abs(stub1_dy) - diag_len
+                stub1_mid_x = start_pos.x
+                stub1_mid_y = start_pos.y + (straight_len if stub1_dy > 0 else -straight_len)
+            stub1_mid_pos = pcbnew.VECTOR2I(int(stub1_mid_x), int(stub1_mid_y))
+
+            track1a = pcbnew.PCB_TRACK(board)
+            track1a.SetStart(start_pos)
+            track1a.SetEnd(stub1_mid_pos)
+            track1a.SetWidth(width)
+            track1a.SetLayer(layer_id)
+            track1a.SetNet(net)
+            board.Add(track1a)
+            items.append(track1a)
+            tracks_created += 1
+
+            track1b = pcbnew.PCB_TRACK(board)
+            track1b.SetStart(stub1_mid_pos)
+            track1b.SetEnd(via1_pos)
+            track1b.SetWidth(width)
+            track1b.SetLayer(layer_id)
+            track1b.SetNet(net)
+            board.Add(track1b)
+            items.append(track1b)
+            tracks_created += 1
+        else:
+            # Direct or already aligned stub
+            track1 = pcbnew.PCB_TRACK(board)
+            track1.SetStart(start_pos)
+            track1.SetEnd(via1_pos)
+            track1.SetWidth(width)
+            track1.SetLayer(layer_id)
+            track1.SetNet(net)
+            board.Add(track1)
+            items.append(track1)
+            tracks_created += 1
 
         # Create first via
         via1 = pcbnew.PCB_VIA(board)
@@ -867,16 +934,52 @@ class ChainRoutePanel(wx.Panel):
         board.Add(via2)
         items.append(via2)
 
-        # Create last stub on start layer
-        track3 = pcbnew.PCB_TRACK(board)
-        track3.SetStart(via2_pos)
-        track3.SetEnd(end_pos)
-        track3.SetWidth(width)
-        track3.SetLayer(layer_id)
-        track3.SetNet(net)
-        board.Add(track3)
-        items.append(track3)
-        tracks_created += 1
+        # Create last stub on start layer (use 45/90 routing if enabled)
+        stub2_dx = end_pos.x - via2_pos.x
+        stub2_dy = end_pos.y - via2_pos.y
+        if use_45deg and stub2_dx != 0 and stub2_dy != 0 and abs(stub2_dx) != abs(stub2_dy):
+            # Need 2-segment 45/90 routing for stub
+            diag_len = min(abs(stub2_dx), abs(stub2_dy))
+            if abs(stub2_dx) > abs(stub2_dy):
+                straight_len = abs(stub2_dx) - diag_len
+                stub2_mid_x = via2_pos.x + (straight_len if stub2_dx > 0 else -straight_len)
+                stub2_mid_y = via2_pos.y
+            else:
+                straight_len = abs(stub2_dy) - diag_len
+                stub2_mid_x = via2_pos.x
+                stub2_mid_y = via2_pos.y + (straight_len if stub2_dy > 0 else -straight_len)
+            stub2_mid_pos = pcbnew.VECTOR2I(int(stub2_mid_x), int(stub2_mid_y))
+
+            track3a = pcbnew.PCB_TRACK(board)
+            track3a.SetStart(via2_pos)
+            track3a.SetEnd(stub2_mid_pos)
+            track3a.SetWidth(width)
+            track3a.SetLayer(layer_id)
+            track3a.SetNet(net)
+            board.Add(track3a)
+            items.append(track3a)
+            tracks_created += 1
+
+            track3b = pcbnew.PCB_TRACK(board)
+            track3b.SetStart(stub2_mid_pos)
+            track3b.SetEnd(end_pos)
+            track3b.SetWidth(width)
+            track3b.SetLayer(layer_id)
+            track3b.SetNet(net)
+            board.Add(track3b)
+            items.append(track3b)
+            tracks_created += 1
+        else:
+            # Direct or already aligned stub
+            track3 = pcbnew.PCB_TRACK(board)
+            track3.SetStart(via2_pos)
+            track3.SetEnd(end_pos)
+            track3.SetWidth(width)
+            track3.SetLayer(layer_id)
+            track3.SetNet(net)
+            board.Add(track3)
+            items.append(track3)
+            tracks_created += 1
 
         return (tracks_created, 2, items)
 
@@ -2238,16 +2341,52 @@ class PadToPadRoutePanel(wx.Panel):
 
         tracks_created = 0
 
-        # Create first stub on start layer
-        track1 = pcbnew.PCB_TRACK(board)
-        track1.SetStart(start_pos)
-        track1.SetEnd(via1_pos)
-        track1.SetWidth(width)
-        track1.SetLayer(layer_id)
-        track1.SetNet(net)
-        board.Add(track1)
-        items.append(track1)
-        tracks_created += 1
+        # Create first stub on start layer (use 45/90 routing if enabled)
+        stub1_dx = via1_pos.x - start_pos.x
+        stub1_dy = via1_pos.y - start_pos.y
+        if use_45deg and stub1_dx != 0 and stub1_dy != 0 and abs(stub1_dx) != abs(stub1_dy):
+            # Need 2-segment 45/90 routing for stub
+            diag_len = min(abs(stub1_dx), abs(stub1_dy))
+            if abs(stub1_dx) > abs(stub1_dy):
+                straight_len = abs(stub1_dx) - diag_len
+                stub1_mid_x = start_pos.x + (straight_len if stub1_dx > 0 else -straight_len)
+                stub1_mid_y = start_pos.y
+            else:
+                straight_len = abs(stub1_dy) - diag_len
+                stub1_mid_x = start_pos.x
+                stub1_mid_y = start_pos.y + (straight_len if stub1_dy > 0 else -straight_len)
+            stub1_mid_pos = pcbnew.VECTOR2I(int(stub1_mid_x), int(stub1_mid_y))
+
+            track1a = pcbnew.PCB_TRACK(board)
+            track1a.SetStart(start_pos)
+            track1a.SetEnd(stub1_mid_pos)
+            track1a.SetWidth(width)
+            track1a.SetLayer(layer_id)
+            track1a.SetNet(net)
+            board.Add(track1a)
+            items.append(track1a)
+            tracks_created += 1
+
+            track1b = pcbnew.PCB_TRACK(board)
+            track1b.SetStart(stub1_mid_pos)
+            track1b.SetEnd(via1_pos)
+            track1b.SetWidth(width)
+            track1b.SetLayer(layer_id)
+            track1b.SetNet(net)
+            board.Add(track1b)
+            items.append(track1b)
+            tracks_created += 1
+        else:
+            # Direct or already aligned stub
+            track1 = pcbnew.PCB_TRACK(board)
+            track1.SetStart(start_pos)
+            track1.SetEnd(via1_pos)
+            track1.SetWidth(width)
+            track1.SetLayer(layer_id)
+            track1.SetNet(net)
+            board.Add(track1)
+            items.append(track1)
+            tracks_created += 1
 
         # Create first via
         via1 = pcbnew.PCB_VIA(board)
@@ -2330,16 +2469,52 @@ class PadToPadRoutePanel(wx.Panel):
         board.Add(via2)
         items.append(via2)
 
-        # Create last stub on start layer
-        track3 = pcbnew.PCB_TRACK(board)
-        track3.SetStart(via2_pos)
-        track3.SetEnd(end_pos)
-        track3.SetWidth(width)
-        track3.SetLayer(layer_id)
-        track3.SetNet(net)
-        board.Add(track3)
-        items.append(track3)
-        tracks_created += 1
+        # Create last stub on start layer (use 45/90 routing if enabled)
+        stub2_dx = end_pos.x - via2_pos.x
+        stub2_dy = end_pos.y - via2_pos.y
+        if use_45deg and stub2_dx != 0 and stub2_dy != 0 and abs(stub2_dx) != abs(stub2_dy):
+            # Need 2-segment 45/90 routing for stub
+            diag_len = min(abs(stub2_dx), abs(stub2_dy))
+            if abs(stub2_dx) > abs(stub2_dy):
+                straight_len = abs(stub2_dx) - diag_len
+                stub2_mid_x = via2_pos.x + (straight_len if stub2_dx > 0 else -straight_len)
+                stub2_mid_y = via2_pos.y
+            else:
+                straight_len = abs(stub2_dy) - diag_len
+                stub2_mid_x = via2_pos.x
+                stub2_mid_y = via2_pos.y + (straight_len if stub2_dy > 0 else -straight_len)
+            stub2_mid_pos = pcbnew.VECTOR2I(int(stub2_mid_x), int(stub2_mid_y))
+
+            track3a = pcbnew.PCB_TRACK(board)
+            track3a.SetStart(via2_pos)
+            track3a.SetEnd(stub2_mid_pos)
+            track3a.SetWidth(width)
+            track3a.SetLayer(layer_id)
+            track3a.SetNet(net)
+            board.Add(track3a)
+            items.append(track3a)
+            tracks_created += 1
+
+            track3b = pcbnew.PCB_TRACK(board)
+            track3b.SetStart(stub2_mid_pos)
+            track3b.SetEnd(end_pos)
+            track3b.SetWidth(width)
+            track3b.SetLayer(layer_id)
+            track3b.SetNet(net)
+            board.Add(track3b)
+            items.append(track3b)
+            tracks_created += 1
+        else:
+            # Direct or already aligned stub
+            track3 = pcbnew.PCB_TRACK(board)
+            track3.SetStart(via2_pos)
+            track3.SetEnd(end_pos)
+            track3.SetWidth(width)
+            track3.SetLayer(layer_id)
+            track3.SetNet(net)
+            board.Add(track3)
+            items.append(track3)
+            tracks_created += 1
 
         return (tracks_created, 2, items)
 
