@@ -319,7 +319,8 @@ class FlipPanel(wx.Panel):
 class ChainRoutePanel(wx.Panel):
     def __init__(self, parent):
         wx.Panel.__init__(self, parent)
-        
+        self._last_created_items = []  # Store items for undo
+
         vbox = wx.BoxSizer(wx.VERTICAL)
         
         # Title
@@ -450,10 +451,18 @@ class ChainRoutePanel(wx.Panel):
         help_max.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
         vbox.Add(help_max, flag=wx.LEFT | wx.TOP, border=10)
 
-        # Create tracks button
+        # Buttons
+        btn_hbox = wx.BoxSizer(wx.HORIZONTAL)
         route_btn = wx.Button(self, label="Create Chain Tracks")
         route_btn.Bind(wx.EVT_BUTTON, self.OnChainRoute)
-        vbox.Add(route_btn, flag=wx.ALIGN_CENTER | wx.TOP, border=20)
+        btn_hbox.Add(route_btn, flag=wx.RIGHT, border=10)
+
+        self.undo_btn = wx.Button(self, label="Undo Last")
+        self.undo_btn.Bind(wx.EVT_BUTTON, self.OnUndo)
+        self.undo_btn.Enable(False)
+        btn_hbox.Add(self.undo_btn)
+
+        vbox.Add(btn_hbox, flag=wx.ALIGN_CENTER | wx.TOP, border=20)
 
         self.SetSizer(vbox)
     
@@ -525,6 +534,7 @@ class ChainRoutePanel(wx.Panel):
             return
 
         # Create tracks between consecutive LEDs
+        self._last_created_items = []  # Clear for undo
         tracks_created = 0
         vias_created = 0
         skipped_distance = 0
@@ -563,15 +573,18 @@ class ChainRoutePanel(wx.Panel):
 
             if use_via_transition:
                 # Create via transition route
-                count, via_count = self._create_via_transition_route(
+                count, via_count, items = self._create_via_transition_route(
                     board, start_pos, end_pos, width_iu, layer_id, via_layer_id,
                     net, via_size_iu, via_drill_iu, stub_length_iu, use_45deg
                 )
                 tracks_created += count
                 vias_created += via_count
+                self._last_created_items.extend(items)
             elif use_45deg:
                 # Create 45°/90° route with diagonal in middle
-                tracks_created += self._create_45deg_middle_route(board, start_pos, end_pos, width_iu, layer_id, net)
+                count, items = self._create_45deg_middle_route(board, start_pos, end_pos, width_iu, layer_id, net)
+                tracks_created += count
+                self._last_created_items.extend(items)
             else:
                 # Direct track
                 track = pcbnew.PCB_TRACK(board)
@@ -582,8 +595,12 @@ class ChainRoutePanel(wx.Panel):
                 track.SetNet(net)
                 board.Add(track)
                 tracks_created += 1
+                self._last_created_items.append(track)
 
         pcbnew.Refresh()
+
+        # Enable undo button if items were created
+        self.undo_btn.Enable(len(self._last_created_items) > 0)
 
         if errors:
             msg = f"Created {tracks_created} track segments"
@@ -604,12 +621,31 @@ class ChainRoutePanel(wx.Panel):
             msg += f" between {len(matching_footprints)} LEDs!"
             wx.MessageBox(msg, "Success", wx.OK | wx.ICON_INFORMATION)
 
+    def OnUndo(self, event):
+        """Remove items created by the last operation."""
+        if not self._last_created_items:
+            wx.MessageBox("Nothing to undo!", "Info", wx.OK | wx.ICON_INFORMATION)
+            return
+
+        board = pcbnew.GetBoard()
+        count = len(self._last_created_items)
+
+        for item in self._last_created_items:
+            board.Remove(item)
+
+        self._last_created_items = []
+        self.undo_btn.Enable(False)
+        pcbnew.Refresh()
+
+        wx.MessageBox(f"Removed {count} items.", "Undo Complete", wx.OK | wx.ICON_INFORMATION)
+
     def _create_45deg_middle_route(self, board, start_pos, end_pos, width, layer_id, net):
         """Create a route with 45° diagonal in the middle.
 
         Pattern: straight → 45° diagonal → straight
-        Returns the number of track segments created.
+        Returns (segments_created, items_list).
         """
+        items = []
         dx = end_pos.x - start_pos.x
         dy = end_pos.y - start_pos.y
 
@@ -622,7 +658,8 @@ class ChainRoutePanel(wx.Panel):
             track.SetLayer(layer_id)
             track.SetNet(net)
             board.Add(track)
-            return 1
+            items.append(track)
+            return (1, items)
 
         # Calculate diagonal and straight portions
         diag_len = min(abs(dx), abs(dy))
@@ -666,6 +703,7 @@ class ChainRoutePanel(wx.Panel):
             track1.SetLayer(layer_id)
             track1.SetNet(net)
             board.Add(track1)
+            items.append(track1)
             segments_created += 1
 
         # Middle segment (45° diagonal)
@@ -676,6 +714,7 @@ class ChainRoutePanel(wx.Panel):
         track2.SetLayer(layer_id)
         track2.SetNet(net)
         board.Add(track2)
+        items.append(track2)
         segments_created += 1
 
         # Last segment (straight) - only if there's distance to cover
@@ -687,16 +726,18 @@ class ChainRoutePanel(wx.Panel):
             track3.SetLayer(layer_id)
             track3.SetNet(net)
             board.Add(track3)
+            items.append(track3)
             segments_created += 1
 
-        return segments_created
+        return (segments_created, items)
 
     def _create_via_transition_route(self, board, start_pos, end_pos, width, layer_id, via_layer_id,
                                       net, via_size, via_drill, stub_length, use_45deg):
         """Create a route with via transitions: stub → via → other layer → via → stub.
 
-        Returns (track_count, via_count).
+        Returns (track_count, via_count, items_list).
         """
+        items = []
         dx = end_pos.x - start_pos.x
         dy = end_pos.y - start_pos.y
         total_dist = (dx * dx + dy * dy) ** 0.5
@@ -704,7 +745,8 @@ class ChainRoutePanel(wx.Panel):
         # If distance is too short for via transition, just do direct route
         if total_dist < stub_length * 3:
             if use_45deg:
-                return (self._create_45deg_middle_route(board, start_pos, end_pos, width, layer_id, net), 0)
+                count, sub_items = self._create_45deg_middle_route(board, start_pos, end_pos, width, layer_id, net)
+                return (count, 0, sub_items)
             else:
                 track = pcbnew.PCB_TRACK(board)
                 track.SetStart(start_pos)
@@ -713,7 +755,7 @@ class ChainRoutePanel(wx.Panel):
                 track.SetLayer(layer_id)
                 track.SetNet(net)
                 board.Add(track)
-                return (1, 0)
+                return (1, 0, [track])
 
         # Calculate direction unit vector
         if total_dist > 0:
@@ -741,6 +783,7 @@ class ChainRoutePanel(wx.Panel):
         track1.SetLayer(layer_id)
         track1.SetNet(net)
         board.Add(track1)
+        items.append(track1)
         tracks_created += 1
 
         # Create first via
@@ -751,6 +794,7 @@ class ChainRoutePanel(wx.Panel):
         via1.SetViaType(pcbnew.VIATYPE_THROUGH)
         via1.SetNet(net)
         board.Add(via1)
+        items.append(via1)
 
         # Create middle track on via layer (with optional 45° routing)
         if use_45deg:
@@ -778,6 +822,7 @@ class ChainRoutePanel(wx.Panel):
                 track2a.SetLayer(via_layer_id)
                 track2a.SetNet(net)
                 board.Add(track2a)
+                items.append(track2a)
                 tracks_created += 1
 
                 track2b = pcbnew.PCB_TRACK(board)
@@ -787,6 +832,7 @@ class ChainRoutePanel(wx.Panel):
                 track2b.SetLayer(via_layer_id)
                 track2b.SetNet(net)
                 board.Add(track2b)
+                items.append(track2b)
                 tracks_created += 1
             else:
                 # Already aligned, single track
@@ -797,6 +843,7 @@ class ChainRoutePanel(wx.Panel):
                 track2.SetLayer(via_layer_id)
                 track2.SetNet(net)
                 board.Add(track2)
+                items.append(track2)
                 tracks_created += 1
         else:
             # Direct track on via layer
@@ -807,6 +854,7 @@ class ChainRoutePanel(wx.Panel):
             track2.SetLayer(via_layer_id)
             track2.SetNet(net)
             board.Add(track2)
+            items.append(track2)
             tracks_created += 1
 
         # Create second via
@@ -817,6 +865,7 @@ class ChainRoutePanel(wx.Panel):
         via2.SetViaType(pcbnew.VIATYPE_THROUGH)
         via2.SetNet(net)
         board.Add(via2)
+        items.append(via2)
 
         # Create last stub on start layer
         track3 = pcbnew.PCB_TRACK(board)
@@ -826,15 +875,17 @@ class ChainRoutePanel(wx.Panel):
         track3.SetLayer(layer_id)
         track3.SetNet(net)
         board.Add(track3)
+        items.append(track3)
         tracks_created += 1
 
-        return (tracks_created, 2)
+        return (tracks_created, 2, items)
 
 
 class AddViasPanel(wx.Panel):
     def __init__(self, parent):
         wx.Panel.__init__(self, parent)
-        
+        self._last_created_items = []  # Store items for undo
+
         vbox = wx.BoxSizer(wx.VERTICAL)
         
         # Title
@@ -967,7 +1018,12 @@ class AddViasPanel(wx.Panel):
         
         via_btn = wx.Button(self, label="Create Vias in Pads")
         via_btn.Bind(wx.EVT_BUTTON, self.OnCreateVias)
-        hbox_btns.Add(via_btn)
+        hbox_btns.Add(via_btn, flag=wx.RIGHT, border=10)
+
+        self.undo_btn = wx.Button(self, label="Undo Last")
+        self.undo_btn.Bind(wx.EVT_BUTTON, self.OnUndo)
+        self.undo_btn.Enable(False)
+        hbox_btns.Add(self.undo_btn)
 
         vbox.Add(hbox_btns, flag=wx.ALIGN_CENTER | wx.TOP | wx.BOTTOM, border=15)
 
@@ -1084,6 +1140,7 @@ class AddViasPanel(wx.Panel):
         has_offset = offset_x != 0 or offset_y != 0
 
         # Create vias
+        self._last_created_items = []  # Clear for undo
         vias_created = 0
         tracks_created = 0
 
@@ -1110,6 +1167,7 @@ class AddViasPanel(wx.Panel):
 
             # Add to board
             board.Add(via)
+            self._last_created_items.append(via)
             vias_created += 1
 
             # Create track from pad to via if auto route is enabled and there's an offset
@@ -1121,9 +1179,13 @@ class AddViasPanel(wx.Panel):
                 track.SetLayer(layer_id)
                 track.SetNet(pad.GetNet())
                 board.Add(track)
+                self._last_created_items.append(track)
                 tracks_created += 1
 
         pcbnew.Refresh()
+
+        # Enable undo button if items were created
+        self.undo_btn.Enable(len(self._last_created_items) > 0)
 
         msg = f"Successfully created {vias_created} vias"
         if tracks_created > 0:
@@ -1133,6 +1195,24 @@ class AddViasPanel(wx.Panel):
         msg += f" at pad {pad_num}!"
 
         wx.MessageBox(msg, "Success", wx.OK | wx.ICON_INFORMATION)
+
+    def OnUndo(self, event):
+        """Remove items created by the last operation."""
+        if not self._last_created_items:
+            wx.MessageBox("Nothing to undo!", "Info", wx.OK | wx.ICON_INFORMATION)
+            return
+
+        board = pcbnew.GetBoard()
+        count = len(self._last_created_items)
+
+        for item in self._last_created_items:
+            board.Remove(item)
+
+        self._last_created_items = []
+        self.undo_btn.Enable(False)
+        pcbnew.Refresh()
+
+        wx.MessageBox(f"Removed {count} items.", "Undo Complete", wx.OK | wx.ICON_INFORMATION)
 
 
 class SelectPadsPanel(wx.Panel):
@@ -1701,6 +1781,7 @@ class PadToPadRoutePanel(wx.Panel):
 
     def __init__(self, parent):
         wx.Panel.__init__(self, parent)
+        self._last_created_items = []  # Store items for undo
 
         vbox = wx.BoxSizer(wx.VERTICAL)
 
@@ -1834,10 +1915,18 @@ class PadToPadRoutePanel(wx.Panel):
         self.matched_label = wx.StaticText(self, label="Matched pairs: 0")
         vbox.Add(self.matched_label, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
-        # Create tracks button
+        # Buttons
+        btn_hbox = wx.BoxSizer(wx.HORIZONTAL)
         route_btn = wx.Button(self, label="Create Tracks")
         route_btn.Bind(wx.EVT_BUTTON, self.OnCreateTracks)
-        vbox.Add(route_btn, flag=wx.ALIGN_CENTER | wx.TOP, border=15)
+        btn_hbox.Add(route_btn, flag=wx.RIGHT, border=10)
+
+        self.undo_btn = wx.Button(self, label="Undo Last")
+        self.undo_btn.Bind(wx.EVT_BUTTON, self.OnUndo)
+        self.undo_btn.Enable(False)
+        btn_hbox.Add(self.undo_btn)
+
+        vbox.Add(btn_hbox, flag=wx.ALIGN_CENTER | wx.TOP, border=15)
 
         self.SetSizer(vbox)
 
@@ -1956,6 +2045,7 @@ class PadToPadRoutePanel(wx.Panel):
             return
 
         # Create tracks between matched pads
+        self._last_created_items = []  # Clear for undo
         tracks_created = 0
         vias_created = 0
         errors = []
@@ -1981,15 +2071,18 @@ class PadToPadRoutePanel(wx.Panel):
 
             if use_via_transition:
                 # Create via transition route
-                count, via_count = self._create_via_transition_route(
+                count, via_count, items = self._create_via_transition_route(
                     board, start_pos, end_pos, width_iu, layer_id, via_layer_id,
                     net, via_size_iu, via_drill_iu, stub_length_iu, use_45deg
                 )
                 tracks_created += count
                 vias_created += via_count
+                self._last_created_items.extend(items)
             elif use_45deg:
                 # Create 45°/90° route with two segments
-                tracks_created += self._create_45deg_route(board, start_pos, end_pos, width_iu, layer_id, net)
+                count, items = self._create_45deg_route(board, start_pos, end_pos, width_iu, layer_id, net)
+                tracks_created += count
+                self._last_created_items.extend(items)
             else:
                 # Direct diagonal track
                 track = pcbnew.PCB_TRACK(board)
@@ -2000,8 +2093,12 @@ class PadToPadRoutePanel(wx.Panel):
                 track.SetNet(net)
                 board.Add(track)
                 tracks_created += 1
+                self._last_created_items.append(track)
 
         pcbnew.Refresh()
+
+        # Enable undo button if items were created
+        self.undo_btn.Enable(len(self._last_created_items) > 0)
 
         if errors:
             msg = f"Created {tracks_created} track segments"
@@ -2018,11 +2115,30 @@ class PadToPadRoutePanel(wx.Panel):
             msg += " between matched footprints!"
             wx.MessageBox(msg, "Success", wx.OK | wx.ICON_INFORMATION)
 
+    def OnUndo(self, event):
+        """Remove items created by the last operation."""
+        if not self._last_created_items:
+            wx.MessageBox("Nothing to undo!", "Info", wx.OK | wx.ICON_INFORMATION)
+            return
+
+        board = pcbnew.GetBoard()
+        count = len(self._last_created_items)
+
+        for item in self._last_created_items:
+            board.Remove(item)
+
+        self._last_created_items = []
+        self.undo_btn.Enable(False)
+        pcbnew.Refresh()
+
+        wx.MessageBox(f"Removed {count} items.", "Undo Complete", wx.OK | wx.ICON_INFORMATION)
+
     def _create_45deg_route(self, board, start_pos, end_pos, width, layer_id, net):
         """Create a route using 45° and 90° segments only.
 
-        Returns the number of track segments created.
+        Returns (segments_created, items_list).
         """
+        items = []
         dx = end_pos.x - start_pos.x
         dy = end_pos.y - start_pos.y
 
@@ -2035,7 +2151,8 @@ class PadToPadRoutePanel(wx.Panel):
             track.SetLayer(layer_id)
             track.SetNet(net)
             board.Add(track)
-            return 1
+            items.append(track)
+            return (1, items)
 
         # Determine the diagonal length (minimum of |dx| and |dy|)
         diag_len = min(abs(dx), abs(dy))
@@ -2063,6 +2180,7 @@ class PadToPadRoutePanel(wx.Panel):
         track1.SetLayer(layer_id)
         track1.SetNet(net)
         board.Add(track1)
+        items.append(track1)
 
         # Create second segment (45° diagonal)
         track2 = pcbnew.PCB_TRACK(board)
@@ -2072,15 +2190,17 @@ class PadToPadRoutePanel(wx.Panel):
         track2.SetLayer(layer_id)
         track2.SetNet(net)
         board.Add(track2)
+        items.append(track2)
 
-        return 2
+        return (2, items)
 
     def _create_via_transition_route(self, board, start_pos, end_pos, width, layer_id, via_layer_id,
                                       net, via_size, via_drill, stub_length, use_45deg):
         """Create a route with via transitions: stub → via → other layer → via → stub.
 
-        Returns (track_count, via_count).
+        Returns (track_count, via_count, items_list).
         """
+        items = []
         dx = end_pos.x - start_pos.x
         dy = end_pos.y - start_pos.y
         total_dist = (dx * dx + dy * dy) ** 0.5
@@ -2088,7 +2208,8 @@ class PadToPadRoutePanel(wx.Panel):
         # If distance is too short for via transition, just do direct route
         if total_dist < stub_length * 3:
             if use_45deg:
-                return (self._create_45deg_route(board, start_pos, end_pos, width, layer_id, net), 0)
+                count, sub_items = self._create_45deg_route(board, start_pos, end_pos, width, layer_id, net)
+                return (count, 0, sub_items)
             else:
                 track = pcbnew.PCB_TRACK(board)
                 track.SetStart(start_pos)
@@ -2097,7 +2218,7 @@ class PadToPadRoutePanel(wx.Panel):
                 track.SetLayer(layer_id)
                 track.SetNet(net)
                 board.Add(track)
-                return (1, 0)
+                return (1, 0, [track])
 
         # Calculate direction unit vector
         if total_dist > 0:
@@ -2125,6 +2246,7 @@ class PadToPadRoutePanel(wx.Panel):
         track1.SetLayer(layer_id)
         track1.SetNet(net)
         board.Add(track1)
+        items.append(track1)
         tracks_created += 1
 
         # Create first via
@@ -2135,6 +2257,7 @@ class PadToPadRoutePanel(wx.Panel):
         via1.SetViaType(pcbnew.VIATYPE_THROUGH)
         via1.SetNet(net)
         board.Add(via1)
+        items.append(via1)
 
         # Create middle track on via layer (with optional 45° routing)
         if use_45deg:
@@ -2162,6 +2285,7 @@ class PadToPadRoutePanel(wx.Panel):
                 track2a.SetLayer(via_layer_id)
                 track2a.SetNet(net)
                 board.Add(track2a)
+                items.append(track2a)
                 tracks_created += 1
 
                 track2b = pcbnew.PCB_TRACK(board)
@@ -2171,6 +2295,7 @@ class PadToPadRoutePanel(wx.Panel):
                 track2b.SetLayer(via_layer_id)
                 track2b.SetNet(net)
                 board.Add(track2b)
+                items.append(track2b)
                 tracks_created += 1
             else:
                 # Already aligned, single track
@@ -2181,6 +2306,7 @@ class PadToPadRoutePanel(wx.Panel):
                 track2.SetLayer(via_layer_id)
                 track2.SetNet(net)
                 board.Add(track2)
+                items.append(track2)
                 tracks_created += 1
         else:
             # Direct track on via layer
@@ -2191,6 +2317,7 @@ class PadToPadRoutePanel(wx.Panel):
             track2.SetLayer(via_layer_id)
             track2.SetNet(net)
             board.Add(track2)
+            items.append(track2)
             tracks_created += 1
 
         # Create second via
@@ -2201,6 +2328,7 @@ class PadToPadRoutePanel(wx.Panel):
         via2.SetViaType(pcbnew.VIATYPE_THROUGH)
         via2.SetNet(net)
         board.Add(via2)
+        items.append(via2)
 
         # Create last stub on start layer
         track3 = pcbnew.PCB_TRACK(board)
@@ -2210,9 +2338,10 @@ class PadToPadRoutePanel(wx.Panel):
         track3.SetLayer(layer_id)
         track3.SetNet(net)
         board.Add(track3)
+        items.append(track3)
         tracks_created += 1
 
-        return (tracks_created, 2)
+        return (tracks_created, 2, items)
 
 
 class UnroutePadsPanel(wx.Panel):
