@@ -1448,41 +1448,33 @@ class SelectPadsPanel(wx.Panel):
             wx.MessageBox("No pads selected! Select pads first.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
-        # Try to use KiCad's teardrop manager
         try:
-            # KiCad 9 teardrop API
-            td_manager = pcbnew.TEARDROP_MANAGER(board)
-
-            # Set teardrop parameters
-            td_params = board.GetDesignSettings().GetTeadropParamsList()
-
-            # Apply teardrops to selected pads
             count = 0
             for pad in selected_pads:
-                # SetTeardropParams on pad if available
+                # Try to set teardrop params on pad
                 if hasattr(pad, 'GetTeardropParams'):
                     params = pad.GetTeardropParams()
                     params.m_Enabled = True
-                    if use_curved:
-                        params.m_CurvedEdges = True
-                    else:
-                        params.m_CurvedEdges = False
+                    params.m_CurvedEdges = use_curved
                     pad.SetTeardropParams(params)
                     count += 1
+                elif hasattr(pad, 'SetLocalSolderPasteMargin'):
+                    # Fallback: check if pad has any teardrop-related method
+                    pass
 
-            # Rebuild teardrops
-            if hasattr(td_manager, 'UpdateTeardrops'):
-                td_manager.UpdateTeardrops(None, None, True)
-            elif hasattr(td_manager, 'SetTeardrops'):
-                td_manager.SetTeardrops(True)
-
-            pcbnew.Refresh()
-
-            td_type = "curved" if use_curved else "straight"
-            wx.MessageBox(f"Added {td_type} teardrops to {count} pads", "Success", wx.OK | wx.ICON_INFORMATION)
+            if count > 0:
+                pcbnew.Refresh()
+                td_type = "curved" if use_curved else "straight"
+                wx.MessageBox(f"Enabled {td_type} teardrops on {count} pads.\n\n"
+                             "Note: Run DRC or use Tools > Update Teardrops to generate them.",
+                             "Success", wx.OK | wx.ICON_INFORMATION)
+            else:
+                wx.MessageBox("Teardrop parameters not available on pads.\n\n"
+                             "Try using Edit > Edit Teardrops in KiCad instead.",
+                             "Info", wx.OK | wx.ICON_INFORMATION)
 
         except Exception as e:
-            wx.MessageBox(f"Error adding teardrops: {str(e)}\n\nNote: Teardrop API may vary by KiCad version.",
+            wx.MessageBox(f"Error: {str(e)}\n\nTry using Edit > Edit Teardrops in KiCad instead.",
                          "Error", wx.OK | wx.ICON_ERROR)
 
     def OnRemoveTeardrops(self, event):
@@ -1501,7 +1493,6 @@ class SelectPadsPanel(wx.Panel):
             return
 
         try:
-            # Disable teardrops on selected pads
             count = 0
             for pad in selected_pads:
                 if hasattr(pad, 'GetTeardropParams'):
@@ -1510,21 +1501,18 @@ class SelectPadsPanel(wx.Panel):
                     pad.SetTeardropParams(params)
                     count += 1
 
-            # Try to update teardrops via manager
-            try:
-                td_manager = pcbnew.TEARDROP_MANAGER(board)
-                if hasattr(td_manager, 'UpdateTeardrops'):
-                    td_manager.UpdateTeardrops(None, None, True)
-                elif hasattr(td_manager, 'RemoveTeardrops'):
-                    td_manager.RemoveTeardrops()
-            except:
-                pass
-
-            pcbnew.Refresh()
-            wx.MessageBox(f"Removed teardrops from {count} pads", "Success", wx.OK | wx.ICON_INFORMATION)
+            if count > 0:
+                pcbnew.Refresh()
+                wx.MessageBox(f"Disabled teardrops on {count} pads.\n\n"
+                             "Note: Run DRC or use Tools > Update Teardrops to remove them.",
+                             "Success", wx.OK | wx.ICON_INFORMATION)
+            else:
+                wx.MessageBox("Teardrop parameters not available on pads.\n\n"
+                             "Try using Edit > Edit Teardrops in KiCad instead.",
+                             "Info", wx.OK | wx.ICON_INFORMATION)
 
         except Exception as e:
-            wx.MessageBox(f"Error removing teardrops: {str(e)}\n\nNote: Teardrop API may vary by KiCad version.",
+            wx.MessageBox(f"Error: {str(e)}\n\nTry using Edit > Edit Teardrops in KiCad instead.",
                          "Error", wx.OK | wx.ICON_ERROR)
 
 
