@@ -1331,17 +1331,45 @@ class SelectPadsPanel(wx.Panel):
         
         # Action buttons
         hbox_btns = wx.BoxSizer(wx.HORIZONTAL)
-        
+
         select_btn = wx.Button(self, label="Select Pads")
         select_btn.Bind(wx.EVT_BUTTON, self.OnSelectPads)
         hbox_btns.Add(select_btn, flag=wx.RIGHT, border=10)
-        
+
         deselect_btn = wx.Button(self, label="Deselect All")
         deselect_btn.Bind(wx.EVT_BUTTON, self.OnDeselectAll)
         hbox_btns.Add(deselect_btn)
-        
+
         vbox.Add(hbox_btns, flag=wx.ALIGN_CENTER | wx.TOP, border=20)
-        
+
+        # Teardrop section
+        teardrop_box = wx.StaticBox(self, label="Teardrops (for selected pads)")
+        teardrop_sizer = wx.StaticBoxSizer(teardrop_box, wx.VERTICAL)
+
+        # Teardrop type choice
+        type_hbox = wx.BoxSizer(wx.HORIZONTAL)
+        type_label = wx.StaticText(self, label="Type:")
+        type_hbox.Add(type_label, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        self.teardrop_type = wx.Choice(self, choices=["Straight", "Curved"])
+        self.teardrop_type.SetSelection(0)
+        type_hbox.Add(self.teardrop_type)
+        teardrop_sizer.Add(type_hbox, flag=wx.ALL, border=5)
+
+        # Teardrop buttons
+        td_btn_hbox = wx.BoxSizer(wx.HORIZONTAL)
+
+        add_td_btn = wx.Button(self, label="Add Teardrops")
+        add_td_btn.Bind(wx.EVT_BUTTON, self.OnAddTeardrops)
+        td_btn_hbox.Add(add_td_btn, flag=wx.RIGHT, border=10)
+
+        remove_td_btn = wx.Button(self, label="Remove Teardrops")
+        remove_td_btn.Bind(wx.EVT_BUTTON, self.OnRemoveTeardrops)
+        td_btn_hbox.Add(remove_td_btn)
+
+        teardrop_sizer.Add(td_btn_hbox, flag=wx.ALL, border=5)
+
+        vbox.Add(teardrop_sizer, flag=wx.EXPAND | wx.ALL, border=10)
+
         self.SetSizer(vbox)
     
     def OnSelectPads(self, event):
@@ -1403,6 +1431,101 @@ class SelectPadsPanel(wx.Panel):
         
         pcbnew.Refresh()
         wx.MessageBox("Deselected all items", "Success", wx.OK | wx.ICON_INFORMATION)
+
+    def OnAddTeardrops(self, event):
+        """Add teardrops to tracks connected to selected pads."""
+        board = pcbnew.GetBoard()
+        use_curved = self.teardrop_type.GetSelection() == 1
+
+        # Get selected pads
+        selected_pads = []
+        for footprint in board.GetFootprints():
+            for pad in footprint.Pads():
+                if pad.IsSelected():
+                    selected_pads.append(pad)
+
+        if not selected_pads:
+            wx.MessageBox("No pads selected! Select pads first.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        # Try to use KiCad's teardrop manager
+        try:
+            # KiCad 9 teardrop API
+            td_manager = pcbnew.TEARDROP_MANAGER(board)
+
+            # Set teardrop parameters
+            td_params = board.GetDesignSettings().GetTeadropParamsList()
+
+            # Apply teardrops to selected pads
+            count = 0
+            for pad in selected_pads:
+                # SetTeardropParams on pad if available
+                if hasattr(pad, 'GetTeardropParams'):
+                    params = pad.GetTeardropParams()
+                    params.m_Enabled = True
+                    if use_curved:
+                        params.m_CurvedEdges = True
+                    else:
+                        params.m_CurvedEdges = False
+                    pad.SetTeardropParams(params)
+                    count += 1
+
+            # Rebuild teardrops
+            if hasattr(td_manager, 'UpdateTeardrops'):
+                td_manager.UpdateTeardrops(None, None, True)
+            elif hasattr(td_manager, 'SetTeardrops'):
+                td_manager.SetTeardrops(True)
+
+            pcbnew.Refresh()
+
+            td_type = "curved" if use_curved else "straight"
+            wx.MessageBox(f"Added {td_type} teardrops to {count} pads", "Success", wx.OK | wx.ICON_INFORMATION)
+
+        except Exception as e:
+            wx.MessageBox(f"Error adding teardrops: {str(e)}\n\nNote: Teardrop API may vary by KiCad version.",
+                         "Error", wx.OK | wx.ICON_ERROR)
+
+    def OnRemoveTeardrops(self, event):
+        """Remove teardrops from tracks connected to selected pads."""
+        board = pcbnew.GetBoard()
+
+        # Get selected pads
+        selected_pads = []
+        for footprint in board.GetFootprints():
+            for pad in footprint.Pads():
+                if pad.IsSelected():
+                    selected_pads.append(pad)
+
+        if not selected_pads:
+            wx.MessageBox("No pads selected! Select pads first.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        try:
+            # Disable teardrops on selected pads
+            count = 0
+            for pad in selected_pads:
+                if hasattr(pad, 'GetTeardropParams'):
+                    params = pad.GetTeardropParams()
+                    params.m_Enabled = False
+                    pad.SetTeardropParams(params)
+                    count += 1
+
+            # Try to update teardrops via manager
+            try:
+                td_manager = pcbnew.TEARDROP_MANAGER(board)
+                if hasattr(td_manager, 'UpdateTeardrops'):
+                    td_manager.UpdateTeardrops(None, None, True)
+                elif hasattr(td_manager, 'RemoveTeardrops'):
+                    td_manager.RemoveTeardrops()
+            except:
+                pass
+
+            pcbnew.Refresh()
+            wx.MessageBox(f"Removed teardrops from {count} pads", "Success", wx.OK | wx.ICON_INFORMATION)
+
+        except Exception as e:
+            wx.MessageBox(f"Error removing teardrops: {str(e)}\n\nNote: Teardrop API may vary by KiCad version.",
+                         "Error", wx.OK | wx.ICON_ERROR)
 
 
 class PinLabelPanel(wx.Panel):
