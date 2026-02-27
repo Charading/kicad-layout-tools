@@ -3,6 +3,8 @@ import pcbnew
 import re
 import json
 import os
+import math
+import random
 
 
 # Settings file path (in same directory as this script)
@@ -66,6 +68,30 @@ _DEFAULT_SETTINGS = {
     'unroute_pattern': 'D{}',
     'unroute_pad': '2',
     'unroute_follow_traces': True,
+    # Select Footprints settings
+    'selfp_ref_prefix': 'HE',
+    # Nudge Ref Des settings
+    'refdes_prefix': 'HE',
+    'refdes_nudge_amount': 0.5,
+    'refdes_text_size': 1.0,
+    'refdes_text_thickness': 0.15,
+    # Via Stitching settings
+    'vstitch_net': 'GND',
+    'vstitch_via_size': 0.8,
+    'vstitch_via_drill': 0.4,
+    'vstitch_spacing': 5.0,
+    'vstitch_mode': 0,
+    'vstitch_randomize': False,
+    'vstitch_random_amount': 0.5,
+    'vstitch_edge_offset': 1.0,
+    'vstitch_clearance': 0.5,
+    # Connect Footprint Pads settings
+    'cfp_ref_prefix': 'HE',
+    'cfp_mode_selected': False,
+    'cfp_max_distance': 2.0,
+    'cfp_track_width': 0.25,
+    'cfp_layer': 'F.Cu',
+    'cfp_layer_auto': True,
 }
 
 
@@ -111,9 +137,13 @@ class LayoutToolsDialog(wx.Dialog):
         self.flip_panel = FlipPanel(notebook)
         self.chain_route_panel = ChainRoutePanel(notebook)
         self.pad_to_pad_route_panel = PadToPadRoutePanel(notebook)
+        self.connect_fp_pads_panel = ConnectFootprintPadsPanel(notebook)
         self.unroute_pads_panel = UnroutePadsPanel(notebook)
         self.select_pads_panel = SelectPadsPanel(notebook)
+        self.select_footprints_panel = SelectFootprintsPanel(notebook)
+        self.select_refdes_panel = SelectRefDesPanel(notebook)
         self.via_panel = AddViasPanel(notebook)
+        self.via_stitch_panel = ViaStitchPanel(notebook)
         self.pin_label_panel = PinLabelPanel(notebook)
         self.relative_offset_panel = RelativeOffsetPanel(notebook)
 
@@ -121,9 +151,13 @@ class LayoutToolsDialog(wx.Dialog):
         notebook.AddPage(self.flip_panel, "Flip Items")
         notebook.AddPage(self.chain_route_panel, "Chain Route LEDs")
         notebook.AddPage(self.pad_to_pad_route_panel, "Pad-to-Pad Route")
+        notebook.AddPage(self.connect_fp_pads_panel, "Connect FP Pads")
         notebook.AddPage(self.unroute_pads_panel, "Unroute Pads")
         notebook.AddPage(self.select_pads_panel, "Select Pads")
+        notebook.AddPage(self.select_footprints_panel, "Select Footprints")
+        notebook.AddPage(self.select_refdes_panel, "Nudge Ref Des")
         notebook.AddPage(self.via_panel, "Add Vias to Pads")
+        notebook.AddPage(self.via_stitch_panel, "Via Stitching")
         notebook.AddPage(self.pin_label_panel, "Pin Header Labels")
         notebook.AddPage(self.relative_offset_panel, "Relative Offset")
         
@@ -1405,12 +1439,1047 @@ class SelectPadsPanel(wx.Panel):
         wx.MessageBox("Deselected all items", "Success", wx.OK | wx.ICON_INFORMATION)
 
 
+class SelectFootprintsPanel(wx.Panel):
+    """Select footprints by reference prefix."""
+
+    def __init__(self, parent):
+        wx.Panel.__init__(self, parent)
+
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Title
+        title = wx.StaticText(self, label="Select Footprints")
+        title_font = title.GetFont()
+        title_font.PointSize += 2
+        title_font = title_font.Bold()
+        title.SetFont(title_font)
+        vbox.Add(title, flag=wx.ALL, border=10)
+
+        # Description
+        desc = wx.StaticText(self, label="Select all footprints matching a reference prefix (e.g., select all HE* footprints).")
+        desc.Wrap(400)
+        vbox.Add(desc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        # Reference prefix
+        hbox1 = wx.BoxSizer(wx.HORIZONTAL)
+        label1 = wx.StaticText(self, label="Reference Prefix:")
+        hbox1.Add(label1, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        self.ref_prefix_ctrl = wx.TextCtrl(self, value=_SETTINGS['selfp_ref_prefix'])
+        hbox1.Add(self.ref_prefix_ctrl, proportion=1)
+        vbox.Add(hbox1, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        help_text = wx.StaticText(self, label="(e.g., 'HE' for hall effect switches, 'C' for capacitors, blank for all)")
+        help_text.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(help_text, flag=wx.LEFT | wx.TOP, border=10)
+
+        # Action buttons
+        hbox_btns = wx.BoxSizer(wx.HORIZONTAL)
+
+        select_btn = wx.Button(self, label="Select Footprints")
+        select_btn.Bind(wx.EVT_BUTTON, self.OnSelectFootprints)
+        hbox_btns.Add(select_btn, flag=wx.RIGHT, border=10)
+
+        deselect_btn = wx.Button(self, label="Deselect All")
+        deselect_btn.Bind(wx.EVT_BUTTON, self.OnDeselectAll)
+        hbox_btns.Add(deselect_btn)
+
+        vbox.Add(hbox_btns, flag=wx.ALIGN_CENTER | wx.TOP, border=20)
+
+        self.SetSizer(vbox)
+
+    def OnSelectFootprints(self, event):
+        board = pcbnew.GetBoard()
+
+        ref_prefix = self.ref_prefix_ctrl.GetValue().strip()
+
+        # Save settings
+        _SETTINGS['selfp_ref_prefix'] = ref_prefix
+        _save_settings()
+
+        # Find and select all matching footprints
+        fps_selected = 0
+
+        for footprint in board.GetFootprints():
+            ref = footprint.GetReference()
+            if not ref_prefix or ref.startswith(ref_prefix):
+                footprint.SetSelected()
+                fps_selected += 1
+
+        pcbnew.Refresh()
+
+        if fps_selected > 0:
+            msg = f"Selected {fps_selected} footprints"
+            if ref_prefix:
+                msg += f" matching {ref_prefix}*"
+            wx.MessageBox(msg, "Success", wx.OK | wx.ICON_INFORMATION)
+        else:
+            wx.MessageBox("No matching footprints found!", "Error", wx.OK | wx.ICON_ERROR)
+
+    def OnDeselectAll(self, event):
+        board = pcbnew.GetBoard()
+
+        for footprint in board.GetFootprints():
+            footprint.ClearSelected()
+            for pad in footprint.Pads():
+                pad.ClearSelected()
+
+        for drawing in board.GetDrawings():
+            drawing.ClearSelected()
+
+        for track in board.GetTracks():
+            track.ClearSelected()
+
+        pcbnew.Refresh()
+        wx.MessageBox("Deselected all items", "Success", wx.OK | wx.ICON_INFORMATION)
+
+
+class SelectRefDesPanel(wx.Panel):
+    """Highlight and nudge reference designator text by prefix."""
+
+    def __init__(self, parent):
+        wx.Panel.__init__(self, parent)
+        self._undo_stack = []  # list of [(ref_field, old_pos), ...]
+        self._redo_stack = []
+
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Title
+        title = wx.StaticText(self, label="Nudge Ref Des")
+        title_font = title.GetFont()
+        title_font.PointSize += 2
+        title_font = title_font.Bold()
+        title.SetFont(title_font)
+        vbox.Add(title, flag=wx.ALL, border=10)
+
+        # Description
+        desc = wx.StaticText(self, label="Select and nudge reference designator text for matching footprints.")
+        desc.Wrap(400)
+        vbox.Add(desc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        # Reference prefix
+        hbox1 = wx.BoxSizer(wx.HORIZONTAL)
+        label1 = wx.StaticText(self, label="Reference Prefix:")
+        hbox1.Add(label1, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        self.ref_prefix_ctrl = wx.TextCtrl(self, value=_SETTINGS['refdes_prefix'])
+        hbox1.Add(self.ref_prefix_ctrl, proportion=1)
+        vbox.Add(hbox1, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        help_text = wx.StaticText(self, label="(e.g., 'HE' to highlight all HE* ref des text)")
+        help_text.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(help_text, flag=wx.LEFT | wx.TOP, border=10)
+
+        # Highlight button
+        highlight_btn = wx.Button(self, label="Highlight Ref Des")
+        highlight_btn.Bind(wx.EVT_BUTTON, self.OnHighlight)
+        vbox.Add(highlight_btn, flag=wx.ALIGN_CENTER | wx.TOP, border=10)
+
+        # Status label
+        self.status_label = wx.StaticText(self, label="")
+        vbox.Add(self.status_label, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        vbox.AddSpacer(10)
+
+        # Arrow pad with nudge amount in center
+        #         [ Up ]
+        # [Left] [amount] [Right]
+        #        [ Down ]
+        arrow_grid = wx.GridBagSizer(5, 5)
+
+        btn_size = (60, 30)
+
+        up_btn = wx.Button(self, label="\u2191 Up", size=btn_size)
+        up_btn.Bind(wx.EVT_BUTTON, lambda e: self._nudge(0, -1))
+        arrow_grid.Add(up_btn, pos=(0, 1), flag=wx.ALIGN_CENTER)
+
+        left_btn = wx.Button(self, label="\u2190", size=(40, 30))
+        left_btn.Bind(wx.EVT_BUTTON, lambda e: self._nudge(-1, 0))
+        arrow_grid.Add(left_btn, pos=(1, 0), flag=wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT)
+
+        self.nudge_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['refdes_nudge_amount']),
+                                             min=0.01, max=50.0,
+                                             initial=_SETTINGS['refdes_nudge_amount'],
+                                             inc=0.1, size=(70, -1))
+        self.nudge_ctrl.SetDigits(2)
+        arrow_grid.Add(self.nudge_ctrl, pos=(1, 1), flag=wx.ALIGN_CENTER)
+
+        right_btn = wx.Button(self, label="\u2192", size=(40, 30))
+        right_btn.Bind(wx.EVT_BUTTON, lambda e: self._nudge(1, 0))
+        arrow_grid.Add(right_btn, pos=(1, 2), flag=wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_LEFT)
+
+        down_btn = wx.Button(self, label="\u2193 Down", size=btn_size)
+        down_btn.Bind(wx.EVT_BUTTON, lambda e: self._nudge(0, 1))
+        arrow_grid.Add(down_btn, pos=(2, 1), flag=wx.ALIGN_CENTER)
+
+        nudge_label = wx.StaticText(self, label="Nudge amount (mm)")
+        nudge_label.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        arrow_grid.Add(nudge_label, pos=(3, 0), span=(1, 3), flag=wx.ALIGN_CENTER | wx.TOP, border=2)
+
+        vbox.Add(arrow_grid, flag=wx.ALIGN_CENTER | wx.TOP, border=5)
+
+        vbox.AddSpacer(5)
+
+        # Text size and thickness
+        hbox_size = wx.BoxSizer(wx.HORIZONTAL)
+        hbox_size.Add(wx.StaticText(self, label="Text Size (mm):"),
+                      flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
+        self.text_size_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['refdes_text_size']),
+                                                 min=0.1, max=10.0,
+                                                 initial=_SETTINGS['refdes_text_size'],
+                                                 inc=0.1, size=(70, -1))
+        self.text_size_ctrl.SetDigits(2)
+        hbox_size.Add(self.text_size_ctrl, flag=wx.RIGHT, border=15)
+
+        hbox_size.Add(wx.StaticText(self, label="Thickness (mm):"),
+                      flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
+        self.text_thickness_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['refdes_text_thickness']),
+                                                      min=0.01, max=5.0,
+                                                      initial=_SETTINGS['refdes_text_thickness'],
+                                                      inc=0.05, size=(70, -1))
+        self.text_thickness_ctrl.SetDigits(2)
+        hbox_size.Add(self.text_thickness_ctrl)
+
+        vbox.Add(hbox_size, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        apply_text_btn = wx.Button(self, label="Apply Size/Thickness")
+        apply_text_btn.Bind(wx.EVT_BUTTON, self.OnApplyTextSize)
+        vbox.Add(apply_text_btn, flag=wx.ALIGN_CENTER | wx.TOP, border=5)
+
+        vbox.AddSpacer(5)
+
+        # Undo / Redo buttons
+        hbox_undo = wx.BoxSizer(wx.HORIZONTAL)
+
+        self.undo_btn = wx.Button(self, label="Undo")
+        self.undo_btn.Bind(wx.EVT_BUTTON, self.OnUndo)
+        self.undo_btn.Enable(False)
+        hbox_undo.Add(self.undo_btn, flag=wx.RIGHT, border=10)
+
+        self.redo_btn = wx.Button(self, label="Redo")
+        self.redo_btn.Bind(wx.EVT_BUTTON, self.OnRedo)
+        self.redo_btn.Enable(False)
+        hbox_undo.Add(self.redo_btn)
+
+        vbox.Add(hbox_undo, flag=wx.ALIGN_CENTER | wx.TOP, border=5)
+
+        vbox.AddSpacer(10)
+
+        # Hide/Show ref des text
+        vis_label = wx.StaticText(self, label="Visibility (hides ref des text on board):")
+        vis_label.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(vis_label, flag=wx.LEFT | wx.TOP, border=10)
+
+        hbox_vis = wx.BoxSizer(wx.HORIZONTAL)
+
+        hide_highlighted_btn = wx.Button(self, label="Hide Highlighted")
+        hide_highlighted_btn.Bind(wx.EVT_BUTTON, self.OnHideHighlighted)
+        hbox_vis.Add(hide_highlighted_btn, flag=wx.RIGHT, border=5)
+
+        hide_selected_btn = wx.Button(self, label="Hide Selected")
+        hide_selected_btn.Bind(wx.EVT_BUTTON, self.OnHideSelected)
+        hbox_vis.Add(hide_selected_btn, flag=wx.RIGHT, border=5)
+
+        show_highlighted_btn = wx.Button(self, label="Show Highlighted")
+        show_highlighted_btn.Bind(wx.EVT_BUTTON, self.OnShowHighlighted)
+        hbox_vis.Add(show_highlighted_btn)
+
+        vbox.Add(hbox_vis, flag=wx.ALIGN_CENTER | wx.TOP, border=5)
+
+        self.SetSizer(vbox)
+
+    def _get_matching_ref_fields(self):
+        """Get reference text fields for footprints matching the prefix."""
+        board = pcbnew.GetBoard()
+        ref_prefix = self.ref_prefix_ctrl.GetValue().strip()
+        fields = []
+        for fp in board.GetFootprints():
+            ref = fp.GetReference()
+            if not ref_prefix or ref.startswith(ref_prefix):
+                # In KiCad 9, Reference() returns the reference field (PCB_FIELD)
+                ref_field = fp.Reference()
+                fields.append(ref_field)
+        return fields
+
+    def OnHighlight(self, event):
+        """Select/highlight matching ref des text on the board."""
+        board = pcbnew.GetBoard()
+        ref_prefix = self.ref_prefix_ctrl.GetValue().strip()
+
+        _SETTINGS['refdes_prefix'] = ref_prefix
+        _save_settings()
+
+        # Deselect everything first
+        for fp in board.GetFootprints():
+            fp.ClearSelected()
+            fp.Reference().ClearSelected()
+            fp.Value().ClearSelected()
+            for pad in fp.Pads():
+                pad.ClearSelected()
+        for drawing in board.GetDrawings():
+            drawing.ClearSelected()
+        for track in board.GetTracks():
+            track.ClearSelected()
+
+        # Select matching ref des text
+        count = 0
+        for fp in board.GetFootprints():
+            ref = fp.GetReference()
+            if not ref_prefix or ref.startswith(ref_prefix):
+                fp.Reference().SetSelected()
+                count += 1
+
+        pcbnew.Refresh()
+        self.status_label.SetLabel(f"Highlighted {count} ref des text items")
+
+    def OnApplyTextSize(self, event):
+        """Apply text size and thickness to all matching ref des text."""
+        text_size = self.text_size_ctrl.GetValue()
+        text_thickness = self.text_thickness_ctrl.GetValue()
+
+        _SETTINGS['refdes_text_size'] = text_size
+        _SETTINGS['refdes_text_thickness'] = text_thickness
+        _save_settings()
+
+        fields = self._get_matching_ref_fields()
+        if not fields:
+            wx.MessageBox("No matching ref des found!", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        size_iu = pcbnew.FromMM(text_size)
+        thickness_iu = pcbnew.FromMM(text_thickness)
+
+        # Save old values for undo
+        undo_entry = []
+        for field in fields:
+            old_size = field.GetTextSize()
+            old_thickness = field.GetTextThickness()
+            undo_entry.append(('text_props', field,
+                               pcbnew.VECTOR2I(old_size.x, old_size.y), old_thickness))
+            field.SetTextSize(pcbnew.VECTOR2I(int(size_iu), int(size_iu)))
+            field.SetTextThickness(int(thickness_iu))
+
+        self._undo_stack.append(undo_entry)
+        self._redo_stack.clear()
+        self._update_undo_redo_buttons()
+
+        pcbnew.Refresh()
+        self.status_label.SetLabel(f"Applied size {text_size}mm / thickness {text_thickness}mm to {len(fields)} ref des")
+
+    def _nudge(self, dx_sign, dy_sign):
+        """Nudge all matching ref des text by the nudge amount."""
+        amount = self.nudge_ctrl.GetValue()
+        _SETTINGS['refdes_nudge_amount'] = amount
+        _save_settings()
+
+        fields = self._get_matching_ref_fields()
+        if not fields:
+            wx.MessageBox("No matching ref des found!", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        dx = pcbnew.FromMM(amount * dx_sign)
+        dy = pcbnew.FromMM(amount * dy_sign)
+
+        # Save old positions for undo
+        undo_entry = []
+        for field in fields:
+            old_pos = field.GetPosition()
+            undo_entry.append(('pos', field, pcbnew.VECTOR2I(old_pos.x, old_pos.y)))
+            new_pos = pcbnew.VECTOR2I(old_pos.x + dx, old_pos.y + dy)
+            field.SetPosition(new_pos)
+
+        self._undo_stack.append(undo_entry)
+        self._redo_stack.clear()
+        self._update_undo_redo_buttons()
+
+        pcbnew.Refresh()
+
+    def _apply_undo_redo(self, from_stack, to_stack):
+        """Generic undo/redo: pop from one stack, save current state to the other."""
+        if not from_stack:
+            return
+
+        entry = from_stack.pop()
+        reverse_entry = []
+
+        for item in entry:
+            if item[0] == 'pos':
+                _, field, saved_pos = item
+                cur_pos = field.GetPosition()
+                reverse_entry.append(('pos', field, pcbnew.VECTOR2I(cur_pos.x, cur_pos.y)))
+                field.SetPosition(saved_pos)
+            elif item[0] == 'text_props':
+                _, field, saved_size, saved_thickness = item
+                cur_size = field.GetTextSize()
+                cur_thickness = field.GetTextThickness()
+                reverse_entry.append(('text_props', field,
+                                      pcbnew.VECTOR2I(cur_size.x, cur_size.y), cur_thickness))
+                field.SetTextSize(saved_size)
+                field.SetTextThickness(saved_thickness)
+            elif item[0] == 'visible':
+                _, field, saved_visible = item
+                cur_visible = field.IsVisible()
+                reverse_entry.append(('visible', field, cur_visible))
+                field.SetVisible(saved_visible)
+
+        to_stack.append(reverse_entry)
+        self._update_undo_redo_buttons()
+        pcbnew.Refresh()
+
+    def OnUndo(self, event):
+        self._apply_undo_redo(self._undo_stack, self._redo_stack)
+
+    def OnRedo(self, event):
+        self._apply_undo_redo(self._redo_stack, self._undo_stack)
+
+    def _update_undo_redo_buttons(self):
+        self.undo_btn.Enable(len(self._undo_stack) > 0)
+        self.redo_btn.Enable(len(self._redo_stack) > 0)
+
+    def _set_visibility(self, fields, visible):
+        """Set visibility on fields and record undo entry."""
+        if not fields:
+            wx.MessageBox("No matching ref des found!", "Error", wx.OK | wx.ICON_ERROR)
+            return 0
+
+        undo_entry = []
+        count = 0
+        for field in fields:
+            old_visible = field.IsVisible()
+            if old_visible != visible:
+                undo_entry.append(('visible', field, old_visible))
+                field.SetVisible(visible)
+                count += 1
+
+        if undo_entry:
+            self._undo_stack.append(undo_entry)
+            self._redo_stack.clear()
+            self._update_undo_redo_buttons()
+
+        pcbnew.Refresh()
+        return count
+
+    def OnHideHighlighted(self, event):
+        """Hide all ref des text matching the prefix."""
+        fields = self._get_matching_ref_fields()
+        count = self._set_visibility(fields, False)
+        if count:
+            self.status_label.SetLabel(f"Hidden {count} ref des")
+
+    def OnHideSelected(self, event):
+        """Hide only currently selected ref des text."""
+        board = pcbnew.GetBoard()
+        fields = []
+        for fp in board.GetFootprints():
+            ref_field = fp.Reference()
+            if ref_field.IsSelected():
+                fields.append(ref_field)
+        count = self._set_visibility(fields, False)
+        if count:
+            self.status_label.SetLabel(f"Hidden {count} selected ref des")
+        elif not fields:
+            wx.MessageBox("No ref des text is selected on the board!", "Error", wx.OK | wx.ICON_ERROR)
+
+    def OnShowHighlighted(self, event):
+        """Show all ref des text matching the prefix."""
+        fields = self._get_matching_ref_fields()
+        count = self._set_visibility(fields, True)
+        if count:
+            self.status_label.SetLabel(f"Shown {count} ref des")
+
+
+class ViaStitchPanel(wx.Panel):
+    """Generate via stitching across a board area or along board edges."""
+
+    def __init__(self, parent):
+        wx.Panel.__init__(self, parent)
+        self._last_created_items = []
+
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Title
+        title = wx.StaticText(self, label="Via Stitching Generator")
+        title_font = title.GetFont()
+        title_font.PointSize += 2
+        title_font = title_font.Bold()
+        title.SetFont(title_font)
+        vbox.Add(title, flag=wx.ALL, border=10)
+
+        # Description
+        desc = wx.StaticText(self, label="Generate via stitching across the board area or along board edges.")
+        desc.Wrap(400)
+        vbox.Add(desc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        # Net selection
+        hbox_net = wx.BoxSizer(wx.HORIZONTAL)
+        hbox_net.Add(wx.StaticText(self, label="Net:"),
+                     flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+
+        board = pcbnew.GetBoard()
+        net_names = []
+        for name in board.GetNetInfo().NetsByName():
+            if name:
+                net_names.append(str(name))
+        net_names.sort()
+
+        self.net_choice = wx.Choice(self, choices=net_names, size=(150, -1))
+        if _SETTINGS['vstitch_net'] in net_names:
+            self.net_choice.SetStringSelection(_SETTINGS['vstitch_net'])
+        elif 'GND' in net_names:
+            self.net_choice.SetStringSelection('GND')
+        elif net_names:
+            self.net_choice.SetSelection(0)
+        hbox_net.Add(self.net_choice)
+
+        refresh_btn = wx.Button(self, label="Refresh", size=(60, -1))
+        refresh_btn.Bind(wx.EVT_BUTTON, self._on_refresh_nets)
+        hbox_net.Add(refresh_btn, flag=wx.LEFT, border=5)
+
+        vbox.Add(hbox_net, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Mode selection
+        mode_box = wx.StaticBox(self, label="Stitching Mode")
+        mode_sizer = wx.StaticBoxSizer(mode_box, wx.VERTICAL)
+
+        self.mode_grid = wx.RadioButton(self, label="Grid Fill (fill board area with vias)", style=wx.RB_GROUP)
+        self.mode_edge = wx.RadioButton(self, label="Edge Stitch (vias along board outline)")
+        self.mode_grid.SetValue(_SETTINGS['vstitch_mode'] == 0)
+        self.mode_edge.SetValue(_SETTINGS['vstitch_mode'] == 1)
+
+        mode_sizer.Add(self.mode_grid, flag=wx.ALL, border=5)
+        mode_sizer.Add(self.mode_edge, flag=wx.ALL, border=5)
+
+        vbox.Add(mode_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Via size and drill
+        hbox_via = wx.BoxSizer(wx.HORIZONTAL)
+        hbox_via.Add(wx.StaticText(self, label="Via Size (mm):"),
+                     flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
+        self.via_size_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['vstitch_via_size']),
+                                                min=0.2, max=3.0,
+                                                initial=_SETTINGS['vstitch_via_size'],
+                                                inc=0.1, size=(70, -1))
+        self.via_size_ctrl.SetDigits(2)
+        hbox_via.Add(self.via_size_ctrl, flag=wx.RIGHT, border=15)
+
+        hbox_via.Add(wx.StaticText(self, label="Drill (mm):"),
+                     flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
+        self.via_drill_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['vstitch_via_drill']),
+                                                 min=0.1, max=2.0,
+                                                 initial=_SETTINGS['vstitch_via_drill'],
+                                                 inc=0.1, size=(70, -1))
+        self.via_drill_ctrl.SetDigits(2)
+        hbox_via.Add(self.via_drill_ctrl)
+
+        vbox.Add(hbox_via, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Spacing
+        hbox_spacing = wx.BoxSizer(wx.HORIZONTAL)
+        hbox_spacing.Add(wx.StaticText(self, label="Spacing (mm):"),
+                         flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
+        self.spacing_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['vstitch_spacing']),
+                                               min=0.5, max=50.0,
+                                               initial=_SETTINGS['vstitch_spacing'],
+                                               inc=0.5, size=(70, -1))
+        self.spacing_ctrl.SetDigits(2)
+        hbox_spacing.Add(self.spacing_ctrl)
+        vbox.Add(hbox_spacing, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Edge offset (for edge mode)
+        hbox_edge = wx.BoxSizer(wx.HORIZONTAL)
+        hbox_edge.Add(wx.StaticText(self, label="Edge Offset (mm):"),
+                      flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
+        self.edge_offset_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['vstitch_edge_offset']),
+                                                    min=0.1, max=20.0,
+                                                    initial=_SETTINGS['vstitch_edge_offset'],
+                                                    inc=0.25, size=(70, -1))
+        self.edge_offset_ctrl.SetDigits(2)
+        hbox_edge.Add(self.edge_offset_ctrl)
+        vbox.Add(hbox_edge, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        help_edge = wx.StaticText(self, label="(Distance inward from board edge for edge stitch mode)")
+        help_edge.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(help_edge, flag=wx.LEFT | wx.TOP, border=10)
+
+        # Randomize
+        hbox_rand = wx.BoxSizer(wx.HORIZONTAL)
+        self.randomize_check = wx.CheckBox(self, label="Randomize positions")
+        self.randomize_check.SetValue(_SETTINGS['vstitch_randomize'])
+        hbox_rand.Add(self.randomize_check, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=10)
+
+        hbox_rand.Add(wx.StaticText(self, label="Amount (mm):"),
+                      flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
+        self.random_amount_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['vstitch_random_amount']),
+                                                      min=0.01, max=10.0,
+                                                      initial=_SETTINGS['vstitch_random_amount'],
+                                                      inc=0.1, size=(70, -1))
+        self.random_amount_ctrl.SetDigits(2)
+        hbox_rand.Add(self.random_amount_ctrl)
+
+        vbox.Add(hbox_rand, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Clearance
+        hbox_clear = wx.BoxSizer(wx.HORIZONTAL)
+        hbox_clear.Add(wx.StaticText(self, label="Clearance (mm):"),
+                       flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
+        self.clearance_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['vstitch_clearance']),
+                                                  min=0.1, max=10.0,
+                                                  initial=_SETTINGS['vstitch_clearance'],
+                                                  inc=0.1, size=(70, -1))
+        self.clearance_ctrl.SetDigits(2)
+        hbox_clear.Add(self.clearance_ctrl)
+        vbox.Add(hbox_clear, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        help_clear = wx.StaticText(self, label="(Min distance from pads, traces, vias, board edge, NPTH, components)")
+        help_clear.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(help_clear, flag=wx.LEFT | wx.TOP, border=10)
+
+        # Status label
+        self.status_label = wx.StaticText(self, label="")
+        vbox.Add(self.status_label, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Buttons
+        btn_hbox = wx.BoxSizer(wx.HORIZONTAL)
+        gen_btn = wx.Button(self, label="Generate")
+        gen_btn.Bind(wx.EVT_BUTTON, self.OnGenerate)
+        btn_hbox.Add(gen_btn, flag=wx.RIGHT, border=10)
+
+        self.undo_btn = wx.Button(self, label="Undo Last")
+        self.undo_btn.Bind(wx.EVT_BUTTON, self.OnUndo)
+        self.undo_btn.Enable(False)
+        btn_hbox.Add(self.undo_btn)
+
+        vbox.Add(btn_hbox, flag=wx.ALIGN_CENTER | wx.TOP, border=10)
+
+        self.SetSizer(vbox)
+
+    def _on_refresh_nets(self, event):
+        """Refresh the net dropdown from the board."""
+        board = pcbnew.GetBoard()
+        current = self.net_choice.GetStringSelection()
+        net_names = []
+        for name in board.GetNetInfo().NetsByName():
+            if name:
+                net_names.append(str(name))
+        net_names.sort()
+        self.net_choice.Set(net_names)
+        if current in net_names:
+            self.net_choice.SetStringSelection(current)
+        elif net_names:
+            self.net_choice.SetSelection(0)
+
+    def _save_settings(self):
+        """Save current control values to settings."""
+        _SETTINGS['vstitch_net'] = self.net_choice.GetStringSelection()
+        _SETTINGS['vstitch_via_size'] = self.via_size_ctrl.GetValue()
+        _SETTINGS['vstitch_via_drill'] = self.via_drill_ctrl.GetValue()
+        _SETTINGS['vstitch_spacing'] = self.spacing_ctrl.GetValue()
+        _SETTINGS['vstitch_mode'] = 0 if self.mode_grid.GetValue() else 1
+        _SETTINGS['vstitch_randomize'] = self.randomize_check.GetValue()
+        _SETTINGS['vstitch_random_amount'] = self.random_amount_ctrl.GetValue()
+        _SETTINGS['vstitch_edge_offset'] = self.edge_offset_ctrl.GetValue()
+        _SETTINGS['vstitch_clearance'] = self.clearance_ctrl.GetValue()
+        _save_settings()
+
+    def _get_net(self, board):
+        """Get the NETINFO_ITEM for the selected net name."""
+        net_name = self.net_choice.GetStringSelection()
+        if not net_name:
+            return None
+        nets_by_name = board.GetNetInfo().NetsByName()
+        if net_name in nets_by_name:
+            return nets_by_name[net_name]
+        return None
+
+    def _get_board_edge_segments(self, board):
+        """Get line segments on Edge.Cuts layer as list of (start, end) VECTOR2I pairs."""
+        edge_cuts_id = board.GetLayerID("Edge.Cuts")
+        segments = []
+        for drawing in board.GetDrawings():
+            if drawing.GetLayer() != edge_cuts_id:
+                continue
+            shape = drawing.GetShape()
+            # PCB_SHAPE line segments
+            if shape == pcbnew.SHAPE_T_SEGMENT:
+                segments.append((drawing.GetStart(), drawing.GetEnd()))
+            elif shape == pcbnew.SHAPE_T_RECT:
+                # Rectangle: 4 edges
+                s = drawing.GetStart()
+                e = drawing.GetEnd()
+                segments.append((pcbnew.VECTOR2I(s.x, s.y), pcbnew.VECTOR2I(e.x, s.y)))
+                segments.append((pcbnew.VECTOR2I(e.x, s.y), pcbnew.VECTOR2I(e.x, e.y)))
+                segments.append((pcbnew.VECTOR2I(e.x, e.y), pcbnew.VECTOR2I(s.x, e.y)))
+                segments.append((pcbnew.VECTOR2I(s.x, e.y), pcbnew.VECTOR2I(s.x, s.y)))
+            elif shape == pcbnew.SHAPE_T_ARC:
+                # Approximate arc with line segments
+                arc_segments = self._approximate_arc(drawing)
+                segments.extend(arc_segments)
+        return segments
+
+    def _approximate_arc(self, arc_drawing):
+        """Approximate an arc with short line segments."""
+        center = arc_drawing.GetCenter()
+        start = arc_drawing.GetStart()
+        # Calculate radius and angles
+        dx = start.x - center.x
+        dy = start.y - center.y
+        radius = math.sqrt(dx * dx + dy * dy)
+        start_angle = math.atan2(dy, dx)
+
+        arc_angle_eda = arc_drawing.GetArcAngle()
+        # GetArcAngle returns EDA_ANGLE; convert to radians
+        arc_angle_deg = arc_angle_eda.AsDegrees()
+        arc_angle_rad = math.radians(arc_angle_deg)
+
+        # Number of segments based on arc length
+        num_segs = max(8, int(abs(arc_angle_deg) / 5))
+        step = arc_angle_rad / num_segs
+
+        segments = []
+        for i in range(num_segs):
+            a1 = start_angle + step * i
+            a2 = start_angle + step * (i + 1)
+            p1 = pcbnew.VECTOR2I(int(center.x + radius * math.cos(a1)),
+                                  int(center.y + radius * math.sin(a1)))
+            p2 = pcbnew.VECTOR2I(int(center.x + radius * math.cos(a2)),
+                                  int(center.y + radius * math.sin(a2)))
+            segments.append((p1, p2))
+        return segments
+
+    def _is_inside_board(self, board, point):
+        """Check if a point is inside the board outline using ray casting."""
+        edge_segments = self._get_board_edge_segments(board)
+        if not edge_segments:
+            return True  # No edge defined, allow all points
+
+        # Ray casting algorithm: count intersections with a horizontal ray
+        px, py = point.x, point.y
+        crossings = 0
+        for seg_start, seg_end in edge_segments:
+            x1, y1 = seg_start.x, seg_start.y
+            x2, y2 = seg_end.x, seg_end.y
+            # Check if ray from (px, py) going right crosses this segment
+            if (y1 <= py < y2) or (y2 <= py < y1):
+                # Calculate x intersection
+                if y1 != y2:
+                    x_intersect = x1 + (py - y1) * (x2 - x1) / (y2 - y1)
+                    if px < x_intersect:
+                        crossings += 1
+
+        return crossings % 2 == 1
+
+    def _point_to_segment_dist(self, px, py, x1, y1, x2, y2):
+        """Return distance from point (px,py) to line segment (x1,y1)-(x2,y2)."""
+        dx = x2 - x1
+        dy = y2 - y1
+        seg_len_sq = dx * dx + dy * dy
+        if seg_len_sq == 0:
+            # Zero-length segment
+            return math.sqrt((px - x1) ** 2 + (py - y1) ** 2)
+        # Project point onto segment, clamped to [0,1]
+        t = max(0, min(1, ((px - x1) * dx + (py - y1) * dy) / seg_len_sq))
+        proj_x = x1 + t * dx
+        proj_y = y1 + t * dy
+        return math.sqrt((px - proj_x) ** 2 + (py - proj_y) ** 2)
+
+    def _build_collision_cache(self, board):
+        """Pre-build lists of obstacles for fast collision checking."""
+        cache = {
+            'pads': [],       # (x, y, radius)
+            'vias': [],       # (x, y, radius)
+            'tracks': [],     # (x1, y1, x2, y2, half_width)
+            'edges': [],      # (x1, y1, x2, y2)
+            'courtyards': [], # (x_min, y_min, x_max, y_max)
+        }
+
+        # Pads (including NPTH)
+        for fp in board.GetFootprints():
+            for pad in fp.Pads():
+                p = pad.GetPosition()
+                # Use pad bounding box half-diagonal as radius
+                bb = pad.GetBoundingBox()
+                rx = bb.GetWidth() / 2
+                ry = bb.GetHeight() / 2
+                radius = math.sqrt(rx * rx + ry * ry)
+                cache['pads'].append((p.x, p.y, radius))
+
+            # Footprint courtyard bounding box
+            bb = fp.GetBoundingBox(False, False)  # Exclude text
+            cache['courtyards'].append((
+                bb.GetLeft(), bb.GetTop(), bb.GetRight(), bb.GetBottom()
+            ))
+
+        # Vias and tracks
+        for track in board.GetTracks():
+            if isinstance(track, pcbnew.PCB_VIA):
+                p = track.GetPosition()
+                cache['vias'].append((p.x, p.y, track.GetWidth() / 2))
+            else:
+                s = track.GetStart()
+                e = track.GetEnd()
+                cache['tracks'].append((s.x, s.y, e.x, e.y, track.GetWidth() / 2))
+
+        # Board edge segments
+        for seg_start, seg_end in self._get_board_edge_segments(board):
+            cache['edges'].append((seg_start.x, seg_start.y, seg_end.x, seg_end.y))
+
+        return cache
+
+    def _check_collision(self, board, pos, clearance_iu, cache=None):
+        """Check if position is too close to any obstacle."""
+        if cache is None:
+            cache = self._build_collision_cache(board)
+
+        px, py = pos.x, pos.y
+
+        # Check pads (including NPTH)
+        for x, y, radius in cache['pads']:
+            dx = px - x
+            dy = py - y
+            if dx * dx + dy * dy < (clearance_iu + radius) ** 2:
+                return True
+
+        # Check existing vias
+        for x, y, radius in cache['vias']:
+            dx = px - x
+            dy = py - y
+            if dx * dx + dy * dy < (clearance_iu + radius) ** 2:
+                return True
+
+        # Check traces
+        for x1, y1, x2, y2, half_w in cache['tracks']:
+            dist = self._point_to_segment_dist(px, py, x1, y1, x2, y2)
+            if dist < clearance_iu + half_w:
+                return True
+
+        # Check board edge
+        for x1, y1, x2, y2 in cache['edges']:
+            dist = self._point_to_segment_dist(px, py, x1, y1, x2, y2)
+            if dist < clearance_iu:
+                return True
+
+        # Check footprint courtyards
+        for x_min, y_min, x_max, y_max in cache['courtyards']:
+            # Check if point is inside or within clearance of the courtyard box
+            cx = max(x_min, min(px, x_max))
+            cy = max(y_min, min(py, y_max))
+            dx = px - cx
+            dy = py - cy
+            if dx * dx + dy * dy < clearance_iu * clearance_iu:
+                return True
+
+        return False
+
+    def _generate_grid(self, board, net, via_size_iu, via_drill_iu, spacing_iu,
+                       randomize, random_iu, clearance_iu):
+        """Generate vias on a grid across the board area."""
+        bbox = board.GetBoardEdgesBoundingBox()
+        if bbox.GetWidth() == 0 or bbox.GetHeight() == 0:
+            wx.MessageBox("No board outline found! Draw an Edge.Cuts outline first.",
+                          "Error", wx.OK | wx.ICON_ERROR)
+            return []
+
+        cache = self._build_collision_cache(board)
+
+        items = []
+        x = bbox.GetLeft() + spacing_iu // 2
+        while x < bbox.GetRight():
+            y = bbox.GetTop() + spacing_iu // 2
+            while y < bbox.GetBottom():
+                vx, vy = x, y
+                if randomize:
+                    vx += int(random.uniform(-random_iu, random_iu))
+                    vy += int(random.uniform(-random_iu, random_iu))
+
+                pos = pcbnew.VECTOR2I(int(vx), int(vy))
+
+                # Check if inside board outline
+                if not self._is_inside_board(board, pos):
+                    y += spacing_iu
+                    continue
+
+                # Check collision with everything
+                if self._check_collision(board, pos, clearance_iu, cache):
+                    y += spacing_iu
+                    continue
+
+                via = pcbnew.PCB_VIA(board)
+                via.SetPosition(pos)
+                via.SetWidth(via_size_iu)
+                via.SetDrill(via_drill_iu)
+                via.SetViaType(pcbnew.VIATYPE_THROUGH)
+                via.SetNet(net)
+                board.Add(via)
+                items.append(via)
+
+                y += spacing_iu
+            x += spacing_iu
+
+        return items
+
+    def _generate_edge(self, board, net, via_size_iu, via_drill_iu, spacing_iu,
+                       edge_offset_iu, randomize, random_iu, clearance_iu):
+        """Generate vias along the board edge."""
+        edge_segments = self._get_board_edge_segments(board)
+        if not edge_segments:
+            wx.MessageBox("No board outline found! Draw an Edge.Cuts outline first.",
+                          "Error", wx.OK | wx.ICON_ERROR)
+            return []
+
+        cache = self._build_collision_cache(board)
+        items = []
+
+        for seg_start, seg_end in edge_segments:
+            dx = seg_end.x - seg_start.x
+            dy = seg_end.y - seg_start.y
+            seg_len = math.sqrt(dx * dx + dy * dy)
+            if seg_len < 1:
+                continue
+
+            # Unit vector along segment
+            ux = dx / seg_len
+            uy = dy / seg_len
+
+            # Normal vector pointing inward (perpendicular, rotated 90 CW)
+            # We'll use the board center to determine inward direction
+            bbox = board.GetBoardEdgesBoundingBox()
+            cx = bbox.GetCenter().x
+            cy = bbox.GetCenter().y
+
+            # Two possible normals
+            nx1, ny1 = -uy, ux
+            nx2, ny2 = uy, -ux
+
+            # Pick the one pointing toward board center
+            mid_x = (seg_start.x + seg_end.x) / 2
+            mid_y = (seg_start.y + seg_end.y) / 2
+            d1 = (mid_x + nx1 * edge_offset_iu - cx) ** 2 + (mid_y + ny1 * edge_offset_iu - cy) ** 2
+            d2 = (mid_x + nx2 * edge_offset_iu - cx) ** 2 + (mid_y + ny2 * edge_offset_iu - cy) ** 2
+            if d1 < d2:
+                nx, ny = nx1, ny1
+            else:
+                nx, ny = nx2, ny2
+
+            # Place vias along segment
+            num_vias = max(1, int(seg_len / spacing_iu))
+            for i in range(num_vias):
+                t = (i + 0.5) / num_vias  # Centered in each segment interval
+                px = seg_start.x + dx * t + nx * edge_offset_iu
+                py = seg_start.y + dy * t + ny * edge_offset_iu
+
+                if randomize:
+                    px += random.uniform(-random_iu, random_iu)
+                    py += random.uniform(-random_iu, random_iu)
+
+                pos = pcbnew.VECTOR2I(int(px), int(py))
+
+                if self._check_collision(board, pos, clearance_iu, cache):
+                    continue
+
+                via = pcbnew.PCB_VIA(board)
+                via.SetPosition(pos)
+                via.SetWidth(via_size_iu)
+                via.SetDrill(via_drill_iu)
+                via.SetViaType(pcbnew.VIATYPE_THROUGH)
+                via.SetNet(net)
+                board.Add(via)
+                items.append(via)
+
+        return items
+
+    def OnGenerate(self, event):
+        """Generate via stitching."""
+        board = pcbnew.GetBoard()
+        self._save_settings()
+
+        net = self._get_net(board)
+        if not net:
+            wx.MessageBox("Selected net not found!", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        via_size = self.via_size_ctrl.GetValue()
+        via_drill = self.via_drill_ctrl.GetValue()
+        spacing = self.spacing_ctrl.GetValue()
+        edge_offset = self.edge_offset_ctrl.GetValue()
+        randomize = self.randomize_check.GetValue()
+        random_amount = self.random_amount_ctrl.GetValue()
+        clearance = self.clearance_ctrl.GetValue()
+        is_grid = self.mode_grid.GetValue()
+
+        via_size_iu = pcbnew.FromMM(via_size)
+        via_drill_iu = pcbnew.FromMM(via_drill)
+        spacing_iu = pcbnew.FromMM(spacing)
+        edge_offset_iu = pcbnew.FromMM(edge_offset)
+        random_iu = pcbnew.FromMM(random_amount)
+        clearance_iu = pcbnew.FromMM(clearance)
+
+        self._last_created_items = []
+
+        if is_grid:
+            items = self._generate_grid(board, net, via_size_iu, via_drill_iu,
+                                        spacing_iu, randomize, random_iu, clearance_iu)
+        else:
+            items = self._generate_edge(board, net, via_size_iu, via_drill_iu,
+                                        spacing_iu, edge_offset_iu, randomize, random_iu,
+                                        clearance_iu)
+
+        self._last_created_items = items
+        self._last_created_group = None
+
+        if items:
+            # Add all vias to a group
+            group = pcbnew.PCB_GROUP(board)
+            group.SetName("Via Stitching")
+            board.Add(group)
+            for via in items:
+                group.AddItem(via)
+            self._last_created_group = group
+
+            # Select all created vias
+            for via in items:
+                via.SetSelected()
+
+        self.undo_btn.Enable(len(items) > 0)
+        pcbnew.Refresh()
+
+        mode_str = "grid fill" if is_grid else "edge stitch"
+        self.status_label.SetLabel(f"Created {len(items)} vias ({mode_str})")
+        if items:
+            wx.MessageBox(f"Created {len(items)} stitching vias ({mode_str}), added to group 'Via Stitching'.",
+                          "Success", wx.OK | wx.ICON_INFORMATION)
+        else:
+            wx.MessageBox("No vias created. Check board outline and clearances.",
+                          "Info", wx.OK | wx.ICON_INFORMATION)
+
+    def OnUndo(self, event):
+        """Remove vias and group created by the last operation."""
+        if not self._last_created_items:
+            wx.MessageBox("Nothing to undo!", "Info", wx.OK | wx.ICON_INFORMATION)
+            return
+
+        board = pcbnew.GetBoard()
+        count = len(self._last_created_items)
+
+        # Remove group first (releases items), then remove vias
+        if self._last_created_group:
+            board.Remove(self._last_created_group)
+            self._last_created_group = None
+
+        for item in self._last_created_items:
+            board.Remove(item)
+
+        self._last_created_items = []
+        self.undo_btn.Enable(False)
+        pcbnew.Refresh()
+
+        self.status_label.SetLabel(f"Removed {count} vias")
+        wx.MessageBox(f"Removed {count} vias and group.", "Undo Complete", wx.OK | wx.ICON_INFORMATION)
+
+
 class PinLabelPanel(wx.Panel):
     def __init__(self, parent):
         wx.Panel.__init__(self, parent)
-        
+
         vbox = wx.BoxSizer(wx.VERTICAL)
-        
+
         # Title
         title = wx.StaticText(self, label="Generate Pin Header Labels")
         title_font = title.GetFont()
@@ -2492,6 +3561,373 @@ class PadToPadRoutePanel(wx.Panel):
             tracks_created += 1
 
         return (tracks_created, 2, items)
+
+
+class ConnectFootprintPadsPanel(wx.Panel):
+    """Route matching-numbered pads together within the same footprint."""
+
+    def __init__(self, parent):
+        wx.Panel.__init__(self, parent)
+        self._last_created_items = []
+
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Title
+        title = wx.StaticText(self, label="Connect Pads in Footprint")
+        title_font = title.GetFont()
+        title_font.PointSize += 2
+        title_font = title_font.Bold()
+        title.SetFont(title_font)
+        vbox.Add(title, flag=wx.ALL, border=10)
+
+        # Description
+        desc = wx.StaticText(self, label="Route matching-numbered pads together within the same footprint (e.g., connect SMD pad 1 to PTH pad 1).")
+        desc.Wrap(400)
+        vbox.Add(desc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        # Selection mode
+        mode_box = wx.StaticBox(self, label="Selection Mode")
+        mode_sizer = wx.StaticBoxSizer(mode_box, wx.VERTICAL)
+
+        self.mode_all = wx.RadioButton(self, label="All matching footprints", style=wx.RB_GROUP)
+        self.mode_selected = wx.RadioButton(self, label="Only selected footprints")
+        self.mode_all.SetValue(not _SETTINGS['cfp_mode_selected'])
+        self.mode_selected.SetValue(_SETTINGS['cfp_mode_selected'])
+
+        self.mode_all.Bind(wx.EVT_RADIOBUTTON, self._update_matched_count)
+        self.mode_selected.Bind(wx.EVT_RADIOBUTTON, self._update_matched_count)
+
+        mode_sizer.Add(self.mode_all, flag=wx.ALL, border=5)
+        mode_sizer.Add(self.mode_selected, flag=wx.ALL, border=5)
+
+        vbox.Add(mode_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Reference prefix
+        hbox1 = wx.BoxSizer(wx.HORIZONTAL)
+        label1 = wx.StaticText(self, label="Reference Prefix:")
+        hbox1.Add(label1, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        self.ref_prefix_ctrl = wx.TextCtrl(self, value=_SETTINGS['cfp_ref_prefix'])
+        self.ref_prefix_ctrl.Bind(wx.EVT_TEXT, self._update_matched_count)
+        hbox1.Add(self.ref_prefix_ctrl, proportion=1)
+        vbox.Add(hbox1, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        help_text1 = wx.StaticText(self, label="(e.g., 'HE' for hall effect switches, blank for all)")
+        help_text1.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(help_text1, flag=wx.LEFT | wx.TOP, border=10)
+
+        # Max distance
+        hbox2 = wx.BoxSizer(wx.HORIZONTAL)
+        label2 = wx.StaticText(self, label="Max Distance (mm):")
+        hbox2.Add(label2, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        self.max_distance_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['cfp_max_distance']),
+                                                    min=0.1, max=50.0,
+                                                    initial=_SETTINGS['cfp_max_distance'],
+                                                    inc=0.5, size=(80, -1))
+        self.max_distance_ctrl.SetDigits(2)
+        hbox2.Add(self.max_distance_ctrl)
+        vbox.Add(hbox2, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        help_dist = wx.StaticText(self, label="(Skip pad pairs farther apart than this)")
+        help_dist.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(help_dist, flag=wx.LEFT | wx.TOP, border=10)
+
+        # Track width
+        hbox3 = wx.BoxSizer(wx.HORIZONTAL)
+        label3 = wx.StaticText(self, label="Track Width (mm):")
+        hbox3.Add(label3, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        self.track_width_ctrl = wx.SpinCtrlDouble(self, value=str(_SETTINGS['cfp_track_width']),
+                                                    min=0.1, max=10.0,
+                                                    initial=_SETTINGS['cfp_track_width'],
+                                                    inc=0.05, size=(80, -1))
+        self.track_width_ctrl.SetDigits(2)
+        hbox3.Add(self.track_width_ctrl)
+        vbox.Add(hbox3, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Auto-detect layer checkbox
+        self.auto_layer_check = wx.CheckBox(self, label="Auto-detect layer from pad layers")
+        self.auto_layer_check.SetValue(_SETTINGS['cfp_layer_auto'])
+        self.auto_layer_check.Bind(wx.EVT_CHECKBOX, self._on_auto_layer_change)
+        vbox.Add(self.auto_layer_check, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Layer selection
+        hbox4 = wx.BoxSizer(wx.HORIZONTAL)
+        self.layer_label = wx.StaticText(self, label="Layer:")
+        hbox4.Add(self.layer_label, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+
+        board = pcbnew.GetBoard()
+        layers = []
+        for i in range(pcbnew.PCB_LAYER_ID_COUNT):
+            layer_name = board.GetLayerName(i)
+            if layer_name and not layer_name.startswith("User."):
+                layers.append(layer_name)
+
+        self.layer_choice = wx.Choice(self, choices=layers, size=(100, -1))
+        if _SETTINGS['cfp_layer'] in layers:
+            self.layer_choice.SetStringSelection(_SETTINGS['cfp_layer'])
+        elif "F.Cu" in layers:
+            self.layer_choice.SetStringSelection("F.Cu")
+        elif layers:
+            self.layer_choice.SetSelection(0)
+
+        hbox4.Add(self.layer_choice)
+        vbox.Add(hbox4, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Disable layer choice when auto is checked
+        self.layer_choice.Enable(not _SETTINGS['cfp_layer_auto'])
+        self.layer_label.Enable(not _SETTINGS['cfp_layer_auto'])
+
+        help_layer = wx.StaticText(self, label="(Used when auto-detect is off, or as preferred layer for auto)")
+        help_layer.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(help_layer, flag=wx.LEFT | wx.TOP, border=10)
+
+        # Matched footprints display
+        self.matched_label = wx.StaticText(self, label="Matched footprints: 0")
+        vbox.Add(self.matched_label, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Buttons
+        btn_hbox = wx.BoxSizer(wx.HORIZONTAL)
+        connect_btn = wx.Button(self, label="Connect Pads")
+        connect_btn.Bind(wx.EVT_BUTTON, self.OnConnectPads)
+        btn_hbox.Add(connect_btn, flag=wx.RIGHT, border=10)
+
+        self.undo_btn = wx.Button(self, label="Undo Last")
+        self.undo_btn.Bind(wx.EVT_BUTTON, self.OnUndo)
+        self.undo_btn.Enable(False)
+        btn_hbox.Add(self.undo_btn)
+
+        vbox.Add(btn_hbox, flag=wx.ALIGN_CENTER | wx.TOP, border=15)
+
+        self.SetSizer(vbox)
+
+        # Initial count update
+        self._update_matched_count(None)
+
+    def _on_auto_layer_change(self, event):
+        """Enable/disable layer choice based on auto-detect checkbox."""
+        auto = self.auto_layer_check.GetValue()
+        self.layer_choice.Enable(not auto)
+        self.layer_label.Enable(not auto)
+
+    def _update_matched_count(self, event):
+        """Update the matched footprints label."""
+        board = pcbnew.GetBoard()
+        ref_prefix = self.ref_prefix_ctrl.GetValue().strip()
+        selected_only = self.mode_selected.GetValue()
+
+        count = 0
+        pad_groups_total = 0
+        for fp in board.GetFootprints():
+            if selected_only and not fp.IsSelected():
+                continue
+            ref = fp.GetReference()
+            if not ref_prefix or ref.startswith(ref_prefix):
+                # Check if this footprint has any duplicate pad numbers
+                pad_nums = {}
+                for pad in fp.Pads():
+                    num = pad.GetNumber()
+                    if num:
+                        pad_nums[num] = pad_nums.get(num, 0) + 1
+                duplicates = sum(1 for c in pad_nums.values() if c >= 2)
+                if duplicates > 0:
+                    count += 1
+                    pad_groups_total += duplicates
+
+        self.matched_label.SetLabel(
+            f"Matched footprints: {count} ({pad_groups_total} pad groups to connect)")
+
+        if event:
+            event.Skip()
+
+    def _find_common_copper_layer(self, board, pad_a, pad_b, preferred_layer_name):
+        """Find a copper layer accessible to both pads.
+
+        Returns the layer ID, preferring preferred_layer_name.
+        Returns None if no common copper layer exists.
+        """
+        layer_set_a = pad_a.GetLayerSet()
+        layer_set_b = pad_b.GetLayerSet()
+
+        # Check preferred layer first
+        for i in range(pcbnew.PCB_LAYER_ID_COUNT):
+            if board.GetLayerName(i) == preferred_layer_name:
+                if layer_set_a.Contains(i) and layer_set_b.Contains(i):
+                    return i
+                break
+
+        # Fall back to any common copper layer
+        for i in range(pcbnew.PCB_LAYER_ID_COUNT):
+            name = board.GetLayerName(i)
+            if name and '.Cu' in name:
+                if layer_set_a.Contains(i) and layer_set_b.Contains(i):
+                    return i
+
+        return None
+
+    def OnConnectPads(self, event):
+        """Create tracks between same-numbered pads within footprints."""
+        board = pcbnew.GetBoard()
+
+        # Read control values
+        ref_prefix = self.ref_prefix_ctrl.GetValue().strip()
+        selected_only = self.mode_selected.GetValue()
+        max_distance = self.max_distance_ctrl.GetValue()
+        track_width = self.track_width_ctrl.GetValue()
+        auto_layer = self.auto_layer_check.GetValue()
+        layer_name = self.layer_choice.GetStringSelection()
+
+        # Save settings
+        _SETTINGS['cfp_ref_prefix'] = ref_prefix
+        _SETTINGS['cfp_mode_selected'] = selected_only
+        _SETTINGS['cfp_max_distance'] = max_distance
+        _SETTINGS['cfp_track_width'] = track_width
+        _SETTINGS['cfp_layer_auto'] = auto_layer
+        _SETTINGS['cfp_layer'] = layer_name
+        _save_settings()
+
+        # Resolve manual layer_id
+        manual_layer_id = None
+        if not auto_layer:
+            for i in range(pcbnew.PCB_LAYER_ID_COUNT):
+                if board.GetLayerName(i) == layer_name:
+                    manual_layer_id = i
+                    break
+            if manual_layer_id is None:
+                wx.MessageBox(f"Layer '{layer_name}' not found!", "Error",
+                              wx.OK | wx.ICON_ERROR)
+                return
+
+        # Collect matching footprints
+        footprints = []
+        for fp in board.GetFootprints():
+            if selected_only and not fp.IsSelected():
+                continue
+            ref = fp.GetReference()
+            if not ref_prefix or ref.startswith(ref_prefix):
+                footprints.append(fp)
+
+        if not footprints:
+            wx.MessageBox("No matching footprints found!", "Error",
+                          wx.OK | wx.ICON_ERROR)
+            return
+
+        # Process each footprint
+        self._last_created_items = []
+        tracks_created = 0
+        skipped_distance = 0
+        skipped_layer = 0
+        width_iu = pcbnew.FromMM(track_width)
+        max_dist_iu = pcbnew.FromMM(max_distance)
+
+        for fp in footprints:
+            # Group pads by pad number
+            pad_groups = {}
+            for pad in fp.Pads():
+                num = pad.GetNumber()
+                if not num:
+                    continue
+                if num not in pad_groups:
+                    pad_groups[num] = []
+                pad_groups[num].append(pad)
+
+            # For each group with 2+ pads, connect nearest pairs
+            for pad_num, pads in pad_groups.items():
+                if len(pads) < 2:
+                    continue
+
+                # Greedy nearest-neighbor pairing
+                remaining = list(pads)
+                while len(remaining) >= 2:
+                    best_dist = float('inf')
+                    best_i = 0
+                    best_j = 1
+                    for i in range(len(remaining)):
+                        for j in range(i + 1, len(remaining)):
+                            pi = remaining[i].GetPosition()
+                            pj = remaining[j].GetPosition()
+                            dx = pj.x - pi.x
+                            dy = pj.y - pi.y
+                            dist = (dx * dx + dy * dy) ** 0.5
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_i = i
+                                best_j = j
+
+                    # Check max distance
+                    if best_dist > max_dist_iu:
+                        skipped_distance += 1
+                        break
+
+                    pad_a = remaining[best_i]
+                    pad_b = remaining[best_j]
+
+                    # Determine layer
+                    if auto_layer:
+                        layer_id = self._find_common_copper_layer(
+                            board, pad_a, pad_b, layer_name)
+                        if layer_id is None:
+                            skipped_layer += 1
+                            remaining.pop(best_j)
+                            remaining.pop(best_i)
+                            continue
+                    else:
+                        layer_id = manual_layer_id
+
+                    # Get net from first pad
+                    net = pad_a.GetNet()
+
+                    # Create direct track
+                    start_pos = pad_a.GetPosition()
+                    end_pos = pad_b.GetPosition()
+
+                    track = pcbnew.PCB_TRACK(board)
+                    track.SetStart(start_pos)
+                    track.SetEnd(end_pos)
+                    track.SetWidth(width_iu)
+                    track.SetLayer(layer_id)
+                    track.SetNet(net)
+                    board.Add(track)
+                    tracks_created += 1
+                    self._last_created_items.append(track)
+
+                    # Remove paired pads
+                    remaining.pop(best_j)
+                    remaining.pop(best_i)
+
+        pcbnew.Refresh()
+        self.undo_btn.Enable(len(self._last_created_items) > 0)
+
+        # Report results
+        msg = f"Created {tracks_created} tracks"
+        if skipped_distance > 0:
+            msg += f"\nSkipped {skipped_distance} pad groups exceeding {max_distance}mm"
+        if skipped_layer > 0:
+            msg += f"\nSkipped {skipped_layer} pad pairs with no common copper layer"
+        if tracks_created > 0:
+            wx.MessageBox(msg, "Success", wx.OK | wx.ICON_INFORMATION)
+        elif skipped_distance > 0 or skipped_layer > 0:
+            wx.MessageBox(msg, "No Tracks Created", wx.OK | wx.ICON_WARNING)
+        else:
+            wx.MessageBox("No footprints with duplicate pad numbers found!", "Info",
+                          wx.OK | wx.ICON_INFORMATION)
+
+    def OnUndo(self, event):
+        """Remove items created by the last operation."""
+        if not self._last_created_items:
+            wx.MessageBox("Nothing to undo!", "Info", wx.OK | wx.ICON_INFORMATION)
+            return
+
+        board = pcbnew.GetBoard()
+        count = len(self._last_created_items)
+
+        for item in self._last_created_items:
+            board.Remove(item)
+
+        self._last_created_items = []
+        self.undo_btn.Enable(False)
+        pcbnew.Refresh()
+
+        wx.MessageBox(f"Removed {count} tracks.", "Undo Complete",
+                      wx.OK | wx.ICON_INFORMATION)
 
 
 class UnroutePadsPanel(wx.Panel):
