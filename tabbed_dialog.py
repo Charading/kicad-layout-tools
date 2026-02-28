@@ -2187,7 +2187,6 @@ class ViaStitchPanel(wx.Panel):
             'vias': [],       # (x, y, radius)
             'tracks': [],     # (x1, y1, x2, y2, half_width)
             'edges': [],      # (x1, y1, x2, y2)
-            'courtyards': [], # (x_min, y_min, x_max, y_max)
         }
 
         # Pads (including NPTH)
@@ -2200,12 +2199,6 @@ class ViaStitchPanel(wx.Panel):
                 ry = bb.GetHeight() / 2
                 radius = math.sqrt(rx * rx + ry * ry)
                 cache['pads'].append((p.x, p.y, radius))
-
-            # Footprint courtyard bounding box
-            bb = fp.GetBoundingBox(False, False)  # Exclude text
-            cache['courtyards'].append((
-                bb.GetLeft(), bb.GetTop(), bb.GetRight(), bb.GetBottom()
-            ))
 
         # Vias and tracks
         for track in board.GetTracks():
@@ -2254,16 +2247,6 @@ class ViaStitchPanel(wx.Panel):
         for x1, y1, x2, y2 in cache['edges']:
             dist = self._point_to_segment_dist(px, py, x1, y1, x2, y2)
             if dist < clearance_iu:
-                return True
-
-        # Check footprint courtyards
-        for x_min, y_min, x_max, y_max in cache['courtyards']:
-            # Check if point is inside or within clearance of the courtyard box
-            cx = max(x_min, min(px, x_max))
-            cy = max(y_min, min(py, y_max))
-            dx = px - cx
-            dy = py - cy
-            if dx * dx + dy * dy < clearance_iu * clearance_iu:
                 return True
 
         return False
