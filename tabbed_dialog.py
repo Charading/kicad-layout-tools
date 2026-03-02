@@ -2093,15 +2093,12 @@ class ViaStitchPanel(wx.Panel):
         """Get line segments on Edge.Cuts layer as list of (start, end) VECTOR2I pairs."""
         edge_cuts_id = board.GetLayerID("Edge.Cuts")
         segments = []
-        for drawing in board.GetDrawings():
-            if drawing.GetLayer() != edge_cuts_id:
-                continue
+
+        def _collect_from_drawing(drawing):
             shape = drawing.GetShape()
-            # PCB_SHAPE line segments
             if shape == pcbnew.SHAPE_T_SEGMENT:
                 segments.append((drawing.GetStart(), drawing.GetEnd()))
             elif shape == pcbnew.SHAPE_T_RECT:
-                # Rectangle: 4 edges
                 s = drawing.GetStart()
                 e = drawing.GetEnd()
                 segments.append((pcbnew.VECTOR2I(s.x, s.y), pcbnew.VECTOR2I(e.x, s.y)))
@@ -2109,9 +2106,51 @@ class ViaStitchPanel(wx.Panel):
                 segments.append((pcbnew.VECTOR2I(e.x, e.y), pcbnew.VECTOR2I(s.x, e.y)))
                 segments.append((pcbnew.VECTOR2I(s.x, e.y), pcbnew.VECTOR2I(s.x, s.y)))
             elif shape == pcbnew.SHAPE_T_ARC:
-                # Approximate arc with line segments
-                arc_segments = self._approximate_arc(drawing)
-                segments.extend(arc_segments)
+                segments.extend(self._approximate_arc(drawing))
+            elif shape == pcbnew.SHAPE_T_CIRCLE:
+                # Approximate circle with segments
+                center = drawing.GetCenter()
+                start = drawing.GetStart()
+                dx = start.x - center.x
+                dy = start.y - center.y
+                radius = math.sqrt(dx * dx + dy * dy)
+                num_segs = 36
+                for i in range(num_segs):
+                    a1 = 2 * math.pi * i / num_segs
+                    a2 = 2 * math.pi * (i + 1) / num_segs
+                    p1 = pcbnew.VECTOR2I(int(center.x + radius * math.cos(a1)),
+                                          int(center.y + radius * math.sin(a1)))
+                    p2 = pcbnew.VECTOR2I(int(center.x + radius * math.cos(a2)),
+                                          int(center.y + radius * math.sin(a2)))
+                    segments.append((p1, p2))
+            elif shape == pcbnew.SHAPE_T_POLY:
+                # Polygon outline
+                try:
+                    poly = drawing.GetPolyShape()
+                    for outline_idx in range(poly.OutlineCount()):
+                        outline = poly.Outline(outline_idx)
+                        pts = outline.PointCount()
+                        for i in range(pts):
+                            p1 = outline.CPoint(i)
+                            p2 = outline.CPoint((i + 1) % pts)
+                            segments.append((
+                                pcbnew.VECTOR2I(p1.x, p1.y),
+                                pcbnew.VECTOR2I(p2.x, p2.y)
+                            ))
+                except Exception:
+                    pass
+
+        # Board-level drawings
+        for drawing in board.GetDrawings():
+            if drawing.GetLayer() == edge_cuts_id:
+                _collect_from_drawing(drawing)
+
+        # Footprint-level edge cuts (cutouts, mounting holes, etc.)
+        for fp in board.GetFootprints():
+            for item in fp.GraphicalItems():
+                if item.GetLayer() == edge_cuts_id:
+                    _collect_from_drawing(item)
+
         return segments
 
     def _approximate_arc(self, arc_drawing):
