@@ -96,8 +96,15 @@ _DEFAULT_SETTINGS = {
     'holes_include_vias': True,
     'holes_include_pth': True,
     'holes_include_npth': True,
-    'holes_filter_all': True,
-    'holes_min_dia': 0.3,
+    'holes_size_filter': False,
+    'holes_size_min': 0.1,
+    'holes_size_max': 1.0,
+    'holes_ref_exclude': False,
+    'holes_ref_prefix': 'HE',
+    'holes_resize': False,
+    'holes_new_drill': 0.3,
+    'holes_resize_via_pad': False,
+    'holes_new_via_pad': 0.6,
     # Resize Vias settings
     'rvias_selected_only': False,
     'rvias_filter_enabled': False,
@@ -4215,145 +4222,267 @@ class UnroutePadsPanel(wx.Panel):
 
 
 class SelectHolesPanel(wx.Panel):
-    """Select drill holes on the board by type and optional minimum diameter."""
+    """Select and optionally resize drill holes with size-range and ref-prefix filters."""
 
     def __init__(self, parent):
         wx.Panel.__init__(self, parent)
 
+        # Use scrolled panel so content isn't clipped on small windows
+        scroll = wx.ScrolledWindow(self, style=wx.VSCROLL)
+        scroll.SetScrollRate(0, 10)
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         # Title
-        title = wx.StaticText(self, label="Select Holes")
+        title = wx.StaticText(scroll, label="Select / Resize Holes")
         title_font = title.GetFont()
         title_font.PointSize += 2
         title_font = title_font.Bold()
         title.SetFont(title_font)
         vbox.Add(title, flag=wx.ALL, border=10)
 
-        # Description
-        desc = wx.StaticText(self, label=(
-            "Select drill holes by type. Useful for finding holes that are "
-            "too small for your fab's minimum drill size."))
+        desc = wx.StaticText(scroll, label=(
+            "Filter holes by type, size range, and reference prefix, "
+            "then select and/or resize them in bulk. "
+            "Use the ref prefix exclude to protect pin headers."))
         desc.Wrap(420)
         vbox.Add(desc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
-        # Hole types
-        types_box = wx.StaticBox(self, label="Include Hole Types")
+        # ── Hole types ────────────────────────────────────────────────────────
+        types_box = wx.StaticBox(scroll, label="Include Hole Types")
         types_sizer = wx.StaticBoxSizer(types_box, wx.VERTICAL)
 
-        self.include_vias = wx.CheckBox(self, label="Vias")
-        self.include_pth = wx.CheckBox(self, label="Through-hole pads (PTH)")
-        self.include_npth = wx.CheckBox(self, label="Mechanical / mounting holes (NPTH)")
+        self.include_vias = wx.CheckBox(scroll, label="Vias")
+        self.include_pth  = wx.CheckBox(scroll, label="Through-hole pads (PTH)")
+        self.include_npth = wx.CheckBox(scroll, label="Mechanical / mounting holes (NPTH)")
         self.include_vias.SetValue(_SETTINGS.get('holes_include_vias', True))
         self.include_pth.SetValue(_SETTINGS.get('holes_include_pth', True))
         self.include_npth.SetValue(_SETTINGS.get('holes_include_npth', True))
 
-        types_sizer.Add(self.include_vias, flag=wx.ALL, border=5)
-        types_sizer.Add(self.include_pth, flag=wx.ALL, border=5)
-        types_sizer.Add(self.include_npth, flag=wx.ALL, border=5)
-
+        types_sizer.Add(self.include_vias, flag=wx.ALL, border=4)
+        types_sizer.Add(self.include_pth,  flag=wx.ALL, border=4)
+        types_sizer.Add(self.include_npth, flag=wx.ALL, border=4)
         vbox.Add(types_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
-        # Filter by size
-        filter_box = wx.StaticBox(self, label="Filter by Diameter")
-        filter_sizer = wx.StaticBoxSizer(filter_box, wx.VERTICAL)
+        # ── Size range filter ─────────────────────────────────────────────────
+        size_box = wx.StaticBox(scroll, label="Filter by Drill Size")
+        size_sizer = wx.StaticBoxSizer(size_box, wx.VERTICAL)
 
-        self.filter_all = wx.RadioButton(self, label="All sizes", style=wx.RB_GROUP)
-        self.filter_min = wx.RadioButton(self, label="Smaller than (mm):")
+        self.size_filter_cb = wx.CheckBox(scroll, label="Only holes within size range (mm):")
+        self.size_filter_cb.SetValue(_SETTINGS.get('holes_size_filter', False))
+        size_sizer.Add(self.size_filter_cb, flag=wx.ALL, border=4)
 
-        filter_all_val = _SETTINGS.get('holes_filter_all', True)
-        self.filter_all.SetValue(filter_all_val)
-        self.filter_min.SetValue(not filter_all_val)
+        size_row = wx.BoxSizer(wx.HORIZONTAL)
+        size_row.Add(wx.StaticText(scroll, label="Min:"),
+                     flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=4)
+        self.size_min_ctrl = wx.SpinCtrlDouble(scroll, min=0.01, max=20.0,
+                                               initial=_SETTINGS.get('holes_size_min', 0.1),
+                                               inc=0.05, size=(70, -1))
+        self.size_min_ctrl.SetDigits(2)
+        size_row.Add(self.size_min_ctrl, flag=wx.RIGHT, border=10)
+        size_row.Add(wx.StaticText(scroll, label="Max:"),
+                     flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=4)
+        self.size_max_ctrl = wx.SpinCtrlDouble(scroll, min=0.01, max=20.0,
+                                               initial=_SETTINGS.get('holes_size_max', 1.0),
+                                               inc=0.05, size=(70, -1))
+        self.size_max_ctrl.SetDigits(2)
+        size_row.Add(self.size_max_ctrl)
+        size_sizer.Add(size_row, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=4)
 
-        filter_sizer.Add(self.filter_all, flag=wx.ALL, border=5)
+        hint_size = wx.StaticText(scroll, label="e.g. 0.1–1.0 skips 2.54 mm pin-header holes")
+        hint_size.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        size_sizer.Add(hint_size, flag=wx.LEFT | wx.BOTTOM, border=4)
 
-        min_row = wx.BoxSizer(wx.HORIZONTAL)
-        min_row.Add(self.filter_min, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
-        self.min_dia_ctrl = wx.SpinCtrlDouble(self, min=0.01, max=10.0,
-                                              initial=_SETTINGS.get('holes_min_dia', 0.3),
-                                              inc=0.05)
-        self.min_dia_ctrl.SetDigits(2)
-        min_row.Add(self.min_dia_ctrl)
-        filter_sizer.Add(min_row, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+        vbox.Add(size_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
-        help_filter = wx.StaticText(self, label="e.g. 0.3 selects all holes with drill < 0.3 mm")
-        help_filter.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
-        filter_sizer.Add(help_filter, flag=wx.LEFT | wx.BOTTOM, border=5)
+        self.size_filter_cb.Bind(wx.EVT_CHECKBOX, self.OnUpdateUI)
 
-        vbox.Add(filter_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        # ── Ref prefix exclude ────────────────────────────────────────────────
+        ref_box = wx.StaticBox(scroll, label="Exclude by Reference Prefix")
+        ref_sizer = wx.StaticBoxSizer(ref_box, wx.VERTICAL)
 
-        self.filter_all.Bind(wx.EVT_RADIOBUTTON, self.OnFilterModeChange)
-        self.filter_min.Bind(wx.EVT_RADIOBUTTON, self.OnFilterModeChange)
-        self.OnFilterModeChange(None)
+        self.ref_exclude_cb = wx.CheckBox(scroll, label="Exclude footprints whose ref starts with:")
+        self.ref_exclude_cb.SetValue(_SETTINGS.get('holes_ref_exclude', False))
+        ref_sizer.Add(self.ref_exclude_cb, flag=wx.ALL, border=4)
 
-        # Status
-        self.status_label = wx.StaticText(self, label="")
+        ref_row = wx.BoxSizer(wx.HORIZONTAL)
+        self.ref_prefix_ctrl = wx.TextCtrl(scroll, value=_SETTINGS.get('holes_ref_prefix', 'HE'),
+                                           size=(80, -1))
+        ref_row.Add(self.ref_prefix_ctrl)
+        hint_ref = wx.StaticText(scroll, label="  e.g. HE, J, P")
+        hint_ref.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        ref_row.Add(hint_ref, flag=wx.ALIGN_CENTER_VERTICAL)
+        ref_sizer.Add(ref_row, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=4)
+
+        vbox.Add(ref_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        self.ref_exclude_cb.Bind(wx.EVT_CHECKBOX, self.OnUpdateUI)
+
+        # ── Resize ────────────────────────────────────────────────────────────
+        resize_box = wx.StaticBox(scroll, label="Resize Matched Holes")
+        resize_sizer = wx.StaticBoxSizer(resize_box, wx.VERTICAL)
+
+        self.resize_cb = wx.CheckBox(scroll, label="Resize holes when applying")
+        self.resize_cb.SetValue(_SETTINGS.get('holes_resize', False))
+        resize_sizer.Add(self.resize_cb, flag=wx.ALL, border=4)
+
+        drill_row = wx.BoxSizer(wx.HORIZONTAL)
+        drill_row.Add(wx.StaticText(scroll, label="New drill (mm):"),
+                      flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
+        self.new_drill_ctrl = wx.SpinCtrlDouble(scroll, min=0.01, max=10.0,
+                                                initial=_SETTINGS.get('holes_new_drill', 0.3),
+                                                inc=0.05, size=(70, -1))
+        self.new_drill_ctrl.SetDigits(2)
+        drill_row.Add(self.new_drill_ctrl)
+        resize_sizer.Add(drill_row, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=4)
+
+        self.resize_via_pad_cb = wx.CheckBox(scroll, label="Also resize via pad diameter (mm):")
+        self.resize_via_pad_cb.SetValue(_SETTINGS.get('holes_resize_via_pad', False))
+        resize_sizer.Add(self.resize_via_pad_cb, flag=wx.ALL, border=4)
+
+        pad_row = wx.BoxSizer(wx.HORIZONTAL)
+        pad_row.Add(wx.StaticText(scroll, label="New via pad (mm):"),
+                    flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
+        self.new_via_pad_ctrl = wx.SpinCtrlDouble(scroll, min=0.01, max=10.0,
+                                                  initial=_SETTINGS.get('holes_new_via_pad', 0.6),
+                                                  inc=0.05, size=(70, -1))
+        self.new_via_pad_ctrl.SetDigits(2)
+        pad_row.Add(self.new_via_pad_ctrl)
+        resize_sizer.Add(pad_row, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=4)
+
+        vbox.Add(resize_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        self.resize_cb.Bind(wx.EVT_CHECKBOX, self.OnUpdateUI)
+        self.resize_via_pad_cb.Bind(wx.EVT_CHECKBOX, self.OnUpdateUI)
+
+        # ── Status + buttons ──────────────────────────────────────────────────
+        self.status_label = wx.StaticText(scroll, label="")
         vbox.Add(self.status_label, flag=wx.LEFT | wx.TOP, border=10)
 
-        # Buttons
         hbox_btns = wx.BoxSizer(wx.HORIZONTAL)
-        select_btn = wx.Button(self, label="Select Holes")
-        select_btn.Bind(wx.EVT_BUTTON, self.OnSelectHoles)
-        hbox_btns.Add(select_btn, flag=wx.RIGHT, border=10)
+        self.apply_btn = wx.Button(scroll, label="Select Holes")
+        self.apply_btn.Bind(wx.EVT_BUTTON, self.OnApply)
+        hbox_btns.Add(self.apply_btn, flag=wx.RIGHT, border=10)
 
-        deselect_btn = wx.Button(self, label="Deselect All")
+        deselect_btn = wx.Button(scroll, label="Deselect All")
         deselect_btn.Bind(wx.EVT_BUTTON, self.OnDeselectAll)
         hbox_btns.Add(deselect_btn)
 
-        vbox.Add(hbox_btns, flag=wx.ALIGN_CENTER | wx.TOP, border=20)
+        vbox.Add(hbox_btns, flag=wx.ALIGN_CENTER | wx.ALL, border=15)
 
-        self.SetSizer(vbox)
+        scroll.SetSizer(vbox)
 
-    def OnFilterModeChange(self, event):
-        self.min_dia_ctrl.Enable(self.filter_min.GetValue())
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(scroll, 1, wx.EXPAND)
+        self.SetSizer(outer)
 
-    def OnSelectHoles(self, event):
+        self.OnUpdateUI(None)
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def OnUpdateUI(self, event):
+        size_on = self.size_filter_cb.GetValue()
+        self.size_min_ctrl.Enable(size_on)
+        self.size_max_ctrl.Enable(size_on)
+
+        ref_on = self.ref_exclude_cb.GetValue()
+        self.ref_prefix_ctrl.Enable(ref_on)
+
+        resize_on = self.resize_cb.GetValue()
+        self.new_drill_ctrl.Enable(resize_on)
+        self.resize_via_pad_cb.Enable(resize_on)
+        self.new_via_pad_ctrl.Enable(resize_on and self.resize_via_pad_cb.GetValue())
+
+        self.apply_btn.SetLabel("Select & Resize" if resize_on else "Select Holes")
+
+    def _collect_settings(self):
+        s = {}
+        s['holes_include_vias']    = self.include_vias.GetValue()
+        s['holes_include_pth']     = self.include_pth.GetValue()
+        s['holes_include_npth']    = self.include_npth.GetValue()
+        s['holes_size_filter']     = self.size_filter_cb.GetValue()
+        s['holes_size_min']        = self.size_min_ctrl.GetValue()
+        s['holes_size_max']        = self.size_max_ctrl.GetValue()
+        s['holes_ref_exclude']     = self.ref_exclude_cb.GetValue()
+        s['holes_ref_prefix']      = self.ref_prefix_ctrl.GetValue().strip()
+        s['holes_resize']          = self.resize_cb.GetValue()
+        s['holes_new_drill']       = self.new_drill_ctrl.GetValue()
+        s['holes_resize_via_pad']  = self.resize_via_pad_cb.GetValue()
+        s['holes_new_via_pad']     = self.new_via_pad_ctrl.GetValue()
+        return s
+
+    def _passes_size(self, drill_iu, size_filter, min_iu, max_iu):
+        if not size_filter:
+            return True
+        return min_iu <= drill_iu <= max_iu
+
+    # ── actions ───────────────────────────────────────────────────────────────
+
+    def OnApply(self, event):
         board = pcbnew.GetBoard()
-
-        include_vias = self.include_vias.GetValue()
-        include_pth = self.include_pth.GetValue()
-        include_npth = self.include_npth.GetValue()
-        filter_all = self.filter_all.GetValue()
-        min_dia_mm = self.min_dia_ctrl.GetValue()
-        min_dia_iu = pcbnew.FromMM(min_dia_mm)
-
-        _SETTINGS['holes_include_vias'] = include_vias
-        _SETTINGS['holes_include_pth'] = include_pth
-        _SETTINGS['holes_include_npth'] = include_npth
-        _SETTINGS['holes_filter_all'] = filter_all
-        _SETTINGS['holes_min_dia'] = min_dia_mm
+        cfg = self._collect_settings()
+        _SETTINGS.update(cfg)
         _save_settings()
 
-        def passes(drill_iu):
-            if filter_all or drill_iu <= 0:
-                return True
-            return drill_iu < min_dia_iu
+        size_filter  = cfg['holes_size_filter']
+        min_iu       = pcbnew.FromMM(cfg['holes_size_min'])
+        max_iu       = pcbnew.FromMM(cfg['holes_size_max'])
+        ref_exclude  = cfg['holes_ref_exclude']
+        ref_prefix   = cfg['holes_ref_prefix']
+        do_resize    = cfg['holes_resize']
+        new_drill_iu = pcbnew.FromMM(cfg['holes_new_drill'])
+        resize_pad   = cfg['holes_resize_via_pad']
+        new_pad_iu   = pcbnew.FromMM(cfg['holes_new_via_pad'])
 
-        count = 0
+        selected = 0
+        resized  = 0
 
-        if include_vias:
+        # Vias
+        if cfg['holes_include_vias']:
             for track in board.GetTracks():
-                if isinstance(track, pcbnew.PCB_VIA):
-                    if passes(track.GetDrill()):
-                        track.SetSelected()
-                        count += 1
+                if not isinstance(track, pcbnew.PCB_VIA):
+                    continue
+                drill = track.GetDrill()
+                if not self._passes_size(drill, size_filter, min_iu, max_iu):
+                    continue
+                track.SetSelected()
+                selected += 1
+                if do_resize:
+                    track.SetDrill(new_drill_iu)
+                    if resize_pad:
+                        track.SetWidth(new_pad_iu)
+                    resized += 1
 
+        # Footprint pads
         for footprint in board.GetFootprints():
+            # Ref prefix exclusion applies to the whole footprint
+            if ref_exclude and ref_prefix:
+                if footprint.GetReference().startswith(ref_prefix):
+                    continue
             for pad in footprint.Pads():
-                attr = pad.GetAttribute()
-                is_pth = (attr == pcbnew.PAD_ATTRIB_PTH)
+                attr   = pad.GetAttribute()
+                is_pth  = (attr == pcbnew.PAD_ATTRIB_PTH)
                 is_npth = (attr == pcbnew.PAD_ATTRIB_NPTH)
-                if (is_pth and include_pth) or (is_npth and include_npth):
-                    drill = pad.GetDrillSizeX()
-                    if drill > 0 and passes(drill):
-                        pad.SetSelected()
-                        count += 1
+                if not ((is_pth and cfg['holes_include_pth']) or
+                        (is_npth and cfg['holes_include_npth'])):
+                    continue
+                drill = pad.GetDrillSizeX()
+                if drill <= 0:
+                    continue
+                if not self._passes_size(drill, size_filter, min_iu, max_iu):
+                    continue
+                pad.SetSelected()
+                selected += 1
+                if do_resize:
+                    pad.SetDrillSize(pcbnew.VECTOR2I(new_drill_iu, new_drill_iu))
+                    resized += 1
 
         pcbnew.Refresh()
-        if filter_all:
-            self.status_label.SetLabel(f"Selected {count} holes")
+
+        if do_resize:
+            self.status_label.SetLabel(
+                f"Selected {selected} holes, resized {resized} to {cfg['holes_new_drill']:.2f} mm drill")
         else:
-            self.status_label.SetLabel(f"Selected {count} holes smaller than {min_dia_mm:.2f} mm")
+            self.status_label.SetLabel(f"Selected {selected} holes")
 
     def OnDeselectAll(self, event):
         board = pcbnew.GetBoard()
