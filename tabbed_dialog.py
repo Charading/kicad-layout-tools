@@ -92,6 +92,19 @@ _DEFAULT_SETTINGS = {
     'cfp_track_width': 0.25,
     'cfp_layer': 'F.Cu',
     'cfp_layer_auto': True,
+    # Select Holes settings
+    'holes_include_vias': True,
+    'holes_include_pth': True,
+    'holes_include_npth': True,
+    'holes_filter_all': True,
+    'holes_min_dia': 0.3,
+    # Resize Vias settings
+    'rvias_selected_only': False,
+    'rvias_filter_enabled': False,
+    'rvias_filter_drill': 0.2,
+    'rvias_filter_pad': 0.45,
+    'rvias_new_drill': 0.3,
+    'rvias_new_pad': 0.6,
 }
 
 
@@ -146,6 +159,8 @@ class LayoutToolsDialog(wx.Dialog):
         self.via_stitch_panel = ViaStitchPanel(notebook)
         self.pin_label_panel = PinLabelPanel(notebook)
         self.relative_offset_panel = RelativeOffsetPanel(notebook)
+        self.select_holes_panel = SelectHolesPanel(notebook)
+        self.resize_vias_panel = ResizeViasPanel(notebook)
 
         notebook.AddPage(self.rotate_panel, "Rotate Items")
         notebook.AddPage(self.flip_panel, "Flip Items")
@@ -160,6 +175,8 @@ class LayoutToolsDialog(wx.Dialog):
         notebook.AddPage(self.via_stitch_panel, "Via Stitching")
         notebook.AddPage(self.pin_label_panel, "Pin Header Labels")
         notebook.AddPage(self.relative_offset_panel, "Relative Offset")
+        notebook.AddPage(self.select_holes_panel, "Select Holes")
+        notebook.AddPage(self.resize_vias_panel, "Resize Vias")
         
         # Main sizer
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -4195,5 +4212,327 @@ class UnroutePadsPanel(wx.Panel):
             pcbnew.Refresh()
             wx.MessageBox(f"Deleted {len(tracks_to_delete)} tracks connected to {len(pad_positions)} pads",
                          "Success", wx.OK | wx.ICON_INFORMATION)
+
+
+class SelectHolesPanel(wx.Panel):
+    """Select drill holes on the board by type and optional minimum diameter."""
+
+    def __init__(self, parent):
+        wx.Panel.__init__(self, parent)
+
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Title
+        title = wx.StaticText(self, label="Select Holes")
+        title_font = title.GetFont()
+        title_font.PointSize += 2
+        title_font = title_font.Bold()
+        title.SetFont(title_font)
+        vbox.Add(title, flag=wx.ALL, border=10)
+
+        # Description
+        desc = wx.StaticText(self, label=(
+            "Select drill holes by type. Useful for finding holes that are "
+            "too small for your fab's minimum drill size."))
+        desc.Wrap(420)
+        vbox.Add(desc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        # Hole types
+        types_box = wx.StaticBox(self, label="Include Hole Types")
+        types_sizer = wx.StaticBoxSizer(types_box, wx.VERTICAL)
+
+        self.include_vias = wx.CheckBox(self, label="Vias")
+        self.include_pth = wx.CheckBox(self, label="Through-hole pads (PTH)")
+        self.include_npth = wx.CheckBox(self, label="Mechanical / mounting holes (NPTH)")
+        self.include_vias.SetValue(_SETTINGS.get('holes_include_vias', True))
+        self.include_pth.SetValue(_SETTINGS.get('holes_include_pth', True))
+        self.include_npth.SetValue(_SETTINGS.get('holes_include_npth', True))
+
+        types_sizer.Add(self.include_vias, flag=wx.ALL, border=5)
+        types_sizer.Add(self.include_pth, flag=wx.ALL, border=5)
+        types_sizer.Add(self.include_npth, flag=wx.ALL, border=5)
+
+        vbox.Add(types_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Filter by size
+        filter_box = wx.StaticBox(self, label="Filter by Diameter")
+        filter_sizer = wx.StaticBoxSizer(filter_box, wx.VERTICAL)
+
+        self.filter_all = wx.RadioButton(self, label="All sizes", style=wx.RB_GROUP)
+        self.filter_min = wx.RadioButton(self, label="Smaller than (mm):")
+
+        filter_all_val = _SETTINGS.get('holes_filter_all', True)
+        self.filter_all.SetValue(filter_all_val)
+        self.filter_min.SetValue(not filter_all_val)
+
+        filter_sizer.Add(self.filter_all, flag=wx.ALL, border=5)
+
+        min_row = wx.BoxSizer(wx.HORIZONTAL)
+        min_row.Add(self.filter_min, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
+        self.min_dia_ctrl = wx.SpinCtrlDouble(self, min=0.01, max=10.0,
+                                              initial=_SETTINGS.get('holes_min_dia', 0.3),
+                                              inc=0.05)
+        self.min_dia_ctrl.SetDigits(2)
+        min_row.Add(self.min_dia_ctrl)
+        filter_sizer.Add(min_row, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+
+        help_filter = wx.StaticText(self, label="e.g. 0.3 selects all holes with drill < 0.3 mm")
+        help_filter.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        filter_sizer.Add(help_filter, flag=wx.LEFT | wx.BOTTOM, border=5)
+
+        vbox.Add(filter_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        self.filter_all.Bind(wx.EVT_RADIOBUTTON, self.OnFilterModeChange)
+        self.filter_min.Bind(wx.EVT_RADIOBUTTON, self.OnFilterModeChange)
+        self.OnFilterModeChange(None)
+
+        # Status
+        self.status_label = wx.StaticText(self, label="")
+        vbox.Add(self.status_label, flag=wx.LEFT | wx.TOP, border=10)
+
+        # Buttons
+        hbox_btns = wx.BoxSizer(wx.HORIZONTAL)
+        select_btn = wx.Button(self, label="Select Holes")
+        select_btn.Bind(wx.EVT_BUTTON, self.OnSelectHoles)
+        hbox_btns.Add(select_btn, flag=wx.RIGHT, border=10)
+
+        deselect_btn = wx.Button(self, label="Deselect All")
+        deselect_btn.Bind(wx.EVT_BUTTON, self.OnDeselectAll)
+        hbox_btns.Add(deselect_btn)
+
+        vbox.Add(hbox_btns, flag=wx.ALIGN_CENTER | wx.TOP, border=20)
+
+        self.SetSizer(vbox)
+
+    def OnFilterModeChange(self, event):
+        self.min_dia_ctrl.Enable(self.filter_min.GetValue())
+
+    def OnSelectHoles(self, event):
+        board = pcbnew.GetBoard()
+
+        include_vias = self.include_vias.GetValue()
+        include_pth = self.include_pth.GetValue()
+        include_npth = self.include_npth.GetValue()
+        filter_all = self.filter_all.GetValue()
+        min_dia_mm = self.min_dia_ctrl.GetValue()
+        min_dia_iu = pcbnew.FromMM(min_dia_mm)
+
+        _SETTINGS['holes_include_vias'] = include_vias
+        _SETTINGS['holes_include_pth'] = include_pth
+        _SETTINGS['holes_include_npth'] = include_npth
+        _SETTINGS['holes_filter_all'] = filter_all
+        _SETTINGS['holes_min_dia'] = min_dia_mm
+        _save_settings()
+
+        def passes(drill_iu):
+            if filter_all or drill_iu <= 0:
+                return True
+            return drill_iu < min_dia_iu
+
+        count = 0
+
+        if include_vias:
+            for track in board.GetTracks():
+                if isinstance(track, pcbnew.PCB_VIA):
+                    if passes(track.GetDrill()):
+                        track.SetSelected()
+                        count += 1
+
+        for footprint in board.GetFootprints():
+            for pad in footprint.Pads():
+                attr = pad.GetAttribute()
+                is_pth = (attr == pcbnew.PAD_ATTRIB_PTH)
+                is_npth = (attr == pcbnew.PAD_ATTRIB_NPTH)
+                if (is_pth and include_pth) or (is_npth and include_npth):
+                    drill = pad.GetDrillSizeX()
+                    if drill > 0 and passes(drill):
+                        pad.SetSelected()
+                        count += 1
+
+        pcbnew.Refresh()
+        if filter_all:
+            self.status_label.SetLabel(f"Selected {count} holes")
+        else:
+            self.status_label.SetLabel(f"Selected {count} holes smaller than {min_dia_mm:.2f} mm")
+
+    def OnDeselectAll(self, event):
+        board = pcbnew.GetBoard()
+        for footprint in board.GetFootprints():
+            footprint.ClearSelected()
+            for pad in footprint.Pads():
+                pad.ClearSelected()
+        for drawing in board.GetDrawings():
+            drawing.ClearSelected()
+        for track in board.GetTracks():
+            track.ClearSelected()
+        pcbnew.Refresh()
+        self.status_label.SetLabel("Deselected all items")
+
+
+class ResizeViasPanel(wx.Panel):
+    """Resize via drill and pad diameter — useful for hitting fab minimums."""
+
+    def __init__(self, parent):
+        wx.Panel.__init__(self, parent)
+
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Title
+        title = wx.StaticText(self, label="Resize Vias")
+        title_font = title.GetFont()
+        title_font.PointSize += 2
+        title_font = title_font.Bold()
+        title.SetFont(title_font)
+        vbox.Add(title, flag=wx.ALL, border=10)
+
+        # Description
+        desc = wx.StaticText(self, label=(
+            "Change via drill and pad sizes in bulk. "
+            "Optionally filter to only vias that currently match a specific size. "
+            "Example: upgrade 0.2 mm drill / 0.45 mm pad to 0.3 / 0.6 mm."))
+        desc.Wrap(420)
+        vbox.Add(desc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        # Scope
+        scope_box = wx.StaticBox(self, label="Scope")
+        scope_sizer = wx.StaticBoxSizer(scope_box, wx.VERTICAL)
+
+        self.scope_all = wx.RadioButton(self, label="All vias on board", style=wx.RB_GROUP)
+        self.scope_selected = wx.RadioButton(self, label="Selected vias only")
+        selected_only = _SETTINGS.get('rvias_selected_only', False)
+        self.scope_all.SetValue(not selected_only)
+        self.scope_selected.SetValue(selected_only)
+
+        scope_sizer.Add(self.scope_all, flag=wx.ALL, border=5)
+        scope_sizer.Add(self.scope_selected, flag=wx.ALL, border=5)
+
+        vbox.Add(scope_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Current-size filter
+        filter_box = wx.StaticBox(self, label="Filter — only resize vias matching current size")
+        filter_sizer = wx.StaticBoxSizer(filter_box, wx.VERTICAL)
+
+        self.filter_enabled = wx.CheckBox(self, label="Enable size filter")
+        self.filter_enabled.SetValue(_SETTINGS.get('rvias_filter_enabled', False))
+        filter_sizer.Add(self.filter_enabled, flag=wx.ALL, border=5)
+
+        grid_filter = wx.FlexGridSizer(2, 3, 6, 8)
+        grid_filter.Add(wx.StaticText(self, label="Current drill (mm):"),
+                        flag=wx.ALIGN_CENTER_VERTICAL)
+        self.filter_drill_ctrl = wx.SpinCtrlDouble(self, min=0.01, max=10.0,
+                                                   initial=_SETTINGS.get('rvias_filter_drill', 0.2),
+                                                   inc=0.05)
+        self.filter_drill_ctrl.SetDigits(2)
+        grid_filter.Add(self.filter_drill_ctrl)
+        grid_filter.AddSpacer(0)
+
+        grid_filter.Add(wx.StaticText(self, label="Current pad (mm):"),
+                        flag=wx.ALIGN_CENTER_VERTICAL)
+        self.filter_pad_ctrl = wx.SpinCtrlDouble(self, min=0.01, max=10.0,
+                                                 initial=_SETTINGS.get('rvias_filter_pad', 0.45),
+                                                 inc=0.05)
+        self.filter_pad_ctrl.SetDigits(2)
+        grid_filter.Add(self.filter_pad_ctrl)
+        help_filter2 = wx.StaticText(self, label="(leave pad at 0 to match any pad size)")
+        help_filter2.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        grid_filter.Add(help_filter2, flag=wx.ALIGN_CENTER_VERTICAL)
+
+        filter_sizer.Add(grid_filter, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+
+        vbox.Add(filter_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        self.filter_enabled.Bind(wx.EVT_CHECKBOX, self.OnFilterToggle)
+        self.OnFilterToggle(None)
+
+        # New size
+        new_box = wx.StaticBox(self, label="New Size")
+        new_sizer = wx.StaticBoxSizer(new_box, wx.VERTICAL)
+
+        grid_new = wx.FlexGridSizer(2, 2, 6, 8)
+        grid_new.Add(wx.StaticText(self, label="New drill (mm):"),
+                     flag=wx.ALIGN_CENTER_VERTICAL)
+        self.new_drill_ctrl = wx.SpinCtrlDouble(self, min=0.01, max=10.0,
+                                                initial=_SETTINGS.get('rvias_new_drill', 0.3),
+                                                inc=0.05)
+        self.new_drill_ctrl.SetDigits(2)
+        grid_new.Add(self.new_drill_ctrl)
+
+        grid_new.Add(wx.StaticText(self, label="New pad (mm):"),
+                     flag=wx.ALIGN_CENTER_VERTICAL)
+        self.new_pad_ctrl = wx.SpinCtrlDouble(self, min=0.01, max=10.0,
+                                              initial=_SETTINGS.get('rvias_new_pad', 0.6),
+                                              inc=0.05)
+        self.new_pad_ctrl.SetDigits(2)
+        grid_new.Add(self.new_pad_ctrl)
+
+        new_sizer.Add(grid_new, flag=wx.ALL, border=5)
+
+        vbox.Add(new_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Status
+        self.status_label = wx.StaticText(self, label="")
+        vbox.Add(self.status_label, flag=wx.LEFT | wx.TOP, border=10)
+
+        # Buttons
+        apply_btn = wx.Button(self, label="Apply to Vias")
+        apply_btn.Bind(wx.EVT_BUTTON, self.OnApply)
+        vbox.Add(apply_btn, flag=wx.ALIGN_CENTER | wx.TOP, border=20)
+
+        self.SetSizer(vbox)
+
+    def OnFilterToggle(self, event):
+        enabled = self.filter_enabled.GetValue()
+        self.filter_drill_ctrl.Enable(enabled)
+        self.filter_pad_ctrl.Enable(enabled)
+
+    def OnApply(self, event):
+        board = pcbnew.GetBoard()
+
+        selected_only = self.scope_selected.GetValue()
+        filter_enabled = self.filter_enabled.GetValue()
+
+        filter_drill_mm = self.filter_drill_ctrl.GetValue()
+        filter_pad_mm = self.filter_pad_ctrl.GetValue()
+        filter_drill_iu = pcbnew.FromMM(filter_drill_mm)
+        filter_pad_iu = pcbnew.FromMM(filter_pad_mm)
+
+        new_drill_mm = self.new_drill_ctrl.GetValue()
+        new_pad_mm = self.new_pad_ctrl.GetValue()
+        new_drill_iu = pcbnew.FromMM(new_drill_mm)
+        new_pad_iu = pcbnew.FromMM(new_pad_mm)
+
+        _SETTINGS['rvias_selected_only'] = selected_only
+        _SETTINGS['rvias_filter_enabled'] = filter_enabled
+        _SETTINGS['rvias_filter_drill'] = filter_drill_mm
+        _SETTINGS['rvias_filter_pad'] = filter_pad_mm
+        _SETTINGS['rvias_new_drill'] = new_drill_mm
+        _SETTINGS['rvias_new_pad'] = new_pad_mm
+        _save_settings()
+
+        # Tolerance: 1 nm in internal units for float comparison
+        TOLERANCE = pcbnew.FromMM(0.001)
+
+        count = 0
+        for track in board.GetTracks():
+            if not isinstance(track, pcbnew.PCB_VIA):
+                continue
+            if selected_only and not track.IsSelected():
+                continue
+            if filter_enabled:
+                drill_match = abs(track.GetDrill() - filter_drill_iu) <= TOLERANCE
+                pad_match = (filter_pad_mm < 0.001 or
+                             abs(track.GetWidth() - filter_pad_iu) <= TOLERANCE)
+                if not (drill_match and pad_match):
+                    continue
+            track.SetDrill(new_drill_iu)
+            track.SetWidth(new_pad_iu)
+            count += 1
+
+        pcbnew.Refresh()
+        if count > 0:
+            self.status_label.SetLabel(
+                f"Resized {count} via(s) to drill={new_drill_mm:.2f} mm, pad={new_pad_mm:.2f} mm")
+        else:
+            self.status_label.SetLabel("No matching vias found")
 
 
