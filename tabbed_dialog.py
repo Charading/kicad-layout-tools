@@ -105,6 +105,21 @@ _DEFAULT_SETTINGS = {
     'holes_new_drill': 0.3,
     'holes_resize_via_pad': False,
     'holes_new_via_pad': 0.6,
+    # Net Label (key labels) settings
+    'netlabel_ref_prefix': 'HS',
+    'netlabel_mode_selected': False,
+    'netlabel_pad_num': '1',
+    'netlabel_strip_prefix': False,
+    'netlabel_strip_text': '',
+    'netlabel_offset_x': 0.0,
+    'netlabel_offset_y': -2.0,
+    'netlabel_rotate_with_fp': True,
+    'netlabel_size': 0.8,
+    'netlabel_thickness': 0.12,
+    'netlabel_rotation': 0.0,
+    'netlabel_layer': 'F.SilkS',
+    'netlabel_h_align': 1,
+    'netlabel_v_align': 1,
     # Resize Vias settings
     'rvias_selected_only': False,
     'rvias_filter_enabled': False,
@@ -168,6 +183,7 @@ class LayoutToolsDialog(wx.Dialog):
         self.relative_offset_panel = RelativeOffsetPanel(notebook)
         self.select_holes_panel = SelectHolesPanel(notebook)
         self.resize_vias_panel = ResizeViasPanel(notebook)
+        self.net_label_panel = NetLabelPanel(notebook)
 
         notebook.AddPage(self.rotate_panel, "Rotate Items")
         notebook.AddPage(self.flip_panel, "Flip Items")
@@ -184,6 +200,7 @@ class LayoutToolsDialog(wx.Dialog):
         notebook.AddPage(self.relative_offset_panel, "Relative Offset")
         notebook.AddPage(self.select_holes_panel, "Select Holes")
         notebook.AddPage(self.resize_vias_panel, "Resize Vias")
+        notebook.AddPage(self.net_label_panel, "Net Labels")
         
         # Main sizer
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -4665,3 +4682,332 @@ class ResizeViasPanel(wx.Panel):
             self.status_label.SetLabel("No matching vias found")
 
 
+
+
+class NetLabelPanel(wx.Panel):
+    """Generate silkscreen text labels from a pad's net name -- e.g. key names on hall sensors."""
+
+    _LAYER_CHOICES = ["F.SilkS", "B.SilkS", "F.Fab", "B.Fab", "F.Cu", "B.Cu"]
+
+    def __init__(self, parent):
+        wx.Panel.__init__(self, parent)
+
+        scroll = wx.ScrolledWindow(self, style=wx.VSCROLL)
+        scroll.SetScrollRate(0, 10)
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Title
+        title = wx.StaticText(scroll, label="Net Labels")
+        title_font = title.GetFont()
+        title_font.PointSize += 2
+        title_font = title_font.Bold()
+        title.SetFont(title_font)
+        vbox.Add(title, flag=wx.ALL, border=10)
+
+        desc = wx.StaticText(scroll, label=(
+            "Place a silkscreen text label on each matching footprint using the net name "
+            "from a specific pad. Ideal for labelling hall sensors with their key name."))
+        desc.Wrap(420)
+        vbox.Add(desc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        # Footprint filter
+        fp_box = wx.StaticBox(scroll, label="Footprint Filter")
+        fp_sizer = wx.StaticBoxSizer(fp_box, wx.VERTICAL)
+
+        self.mode_all      = wx.RadioButton(scroll, label="All footprints matching prefix", style=wx.RB_GROUP)
+        self.mode_selected = wx.RadioButton(scroll, label="Selected footprints only")
+        sel = _SETTINGS.get("netlabel_mode_selected", False)
+        self.mode_all.SetValue(not sel)
+        self.mode_selected.SetValue(sel)
+        fp_sizer.Add(self.mode_all,      flag=wx.ALL, border=4)
+        fp_sizer.Add(self.mode_selected, flag=wx.ALL, border=4)
+
+        ref_row = wx.BoxSizer(wx.HORIZONTAL)
+        ref_row.Add(wx.StaticText(scroll, label="Ref prefix:"),
+                    flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
+        self.ref_prefix_ctrl = wx.TextCtrl(scroll, value=_SETTINGS.get("netlabel_ref_prefix", "HS"),
+                                           size=(80, -1))
+        ref_row.Add(self.ref_prefix_ctrl)
+        hint_ref = wx.StaticText(scroll, label="  (blank = all footprints)")
+        hint_ref.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        ref_row.Add(hint_ref, flag=wx.ALIGN_CENTER_VERTICAL)
+        fp_sizer.Add(ref_row, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=4)
+
+        vbox.Add(fp_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        self.mode_all.Bind(wx.EVT_RADIOBUTTON, self.OnModeChange)
+        self.mode_selected.Bind(wx.EVT_RADIOBUTTON, self.OnModeChange)
+
+        # Net source
+        net_box = wx.StaticBox(scroll, label="Net Source")
+        net_sizer = wx.StaticBoxSizer(net_box, wx.VERTICAL)
+
+        pad_row = wx.BoxSizer(wx.HORIZONTAL)
+        pad_row.Add(wx.StaticText(scroll, label="Read net from pad number:"),
+                    flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
+        self.pad_num_ctrl = wx.TextCtrl(scroll, value=_SETTINGS.get("netlabel_pad_num", "1"),
+                                        size=(50, -1))
+        pad_row.Add(self.pad_num_ctrl)
+        net_sizer.Add(pad_row, flag=wx.ALL, border=4)
+
+        self.strip_cb = wx.CheckBox(scroll, label="Strip prefix from net name:")
+        self.strip_cb.SetValue(_SETTINGS.get("netlabel_strip_prefix", False))
+        net_sizer.Add(self.strip_cb, flag=wx.ALL, border=4)
+
+        strip_row = wx.BoxSizer(wx.HORIZONTAL)
+        self.strip_ctrl = wx.TextCtrl(scroll, value=_SETTINGS.get("netlabel_strip_text", ""),
+                                      size=(120, -1))
+        strip_row.Add(self.strip_ctrl)
+        hint_strip = wx.StaticText(scroll, label="  e.g. SW_")
+        hint_strip.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        strip_row.Add(hint_strip, flag=wx.ALIGN_CENTER_VERTICAL)
+        net_sizer.Add(strip_row, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=4)
+
+        vbox.Add(net_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        self.strip_cb.Bind(wx.EVT_CHECKBOX, self.OnUpdateUI)
+
+        # Position
+        pos_box = wx.StaticBox(scroll, label="Position (relative to footprint centre)")
+        pos_sizer = wx.StaticBoxSizer(pos_box, wx.VERTICAL)
+
+        pos_grid = wx.FlexGridSizer(2, 2, 6, 8)
+        pos_grid.Add(wx.StaticText(scroll, label="X offset (mm):"), flag=wx.ALIGN_CENTER_VERTICAL)
+        self.offset_x_ctrl = wx.SpinCtrlDouble(scroll, min=-100, max=100,
+                                               initial=_SETTINGS.get("netlabel_offset_x", 0.0),
+                                               inc=0.25, size=(80, -1))
+        self.offset_x_ctrl.SetDigits(2)
+        pos_grid.Add(self.offset_x_ctrl)
+
+        pos_grid.Add(wx.StaticText(scroll, label="Y offset (mm):"), flag=wx.ALIGN_CENTER_VERTICAL)
+        self.offset_y_ctrl = wx.SpinCtrlDouble(scroll, min=-100, max=100,
+                                               initial=_SETTINGS.get("netlabel_offset_y", -2.0),
+                                               inc=0.25, size=(80, -1))
+        self.offset_y_ctrl.SetDigits(2)
+        pos_grid.Add(self.offset_y_ctrl)
+        pos_sizer.Add(pos_grid, flag=wx.ALL, border=4)
+
+        self.rotate_with_fp_cb = wx.CheckBox(scroll,
+            label="Rotate offset with footprint (keeps label in same relative position)")
+        self.rotate_with_fp_cb.SetValue(_SETTINGS.get("netlabel_rotate_with_fp", True))
+        pos_sizer.Add(self.rotate_with_fp_cb, flag=wx.ALL, border=4)
+
+        vbox.Add(pos_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Text style
+        style_box = wx.StaticBox(scroll, label="Text Style")
+        style_sizer = wx.StaticBoxSizer(style_box, wx.VERTICAL)
+
+        style_grid = wx.FlexGridSizer(4, 2, 6, 8)
+        style_grid.AddGrowableCol(1)
+
+        style_grid.Add(wx.StaticText(scroll, label="Size (mm):"), flag=wx.ALIGN_CENTER_VERTICAL)
+        self.size_ctrl = wx.SpinCtrlDouble(scroll, min=0.1, max=10.0,
+                                           initial=_SETTINGS.get("netlabel_size", 0.8),
+                                           inc=0.1, size=(80, -1))
+        self.size_ctrl.SetDigits(2)
+        style_grid.Add(self.size_ctrl)
+
+        style_grid.Add(wx.StaticText(scroll, label="Thickness (mm):"), flag=wx.ALIGN_CENTER_VERTICAL)
+        self.thickness_ctrl = wx.SpinCtrlDouble(scroll, min=0.01, max=2.0,
+                                                initial=_SETTINGS.get("netlabel_thickness", 0.12),
+                                                inc=0.01, size=(80, -1))
+        self.thickness_ctrl.SetDigits(2)
+        style_grid.Add(self.thickness_ctrl)
+
+        style_grid.Add(wx.StaticText(scroll, label="Extra rotation (deg):"), flag=wx.ALIGN_CENTER_VERTICAL)
+        self.rotation_ctrl = wx.SpinCtrlDouble(scroll, min=-360, max=360,
+                                               initial=_SETTINGS.get("netlabel_rotation", 0.0),
+                                               inc=90, size=(80, -1))
+        self.rotation_ctrl.SetDigits(1)
+        style_grid.Add(self.rotation_ctrl)
+
+        style_grid.Add(wx.StaticText(scroll, label="Layer:"), flag=wx.ALIGN_CENTER_VERTICAL)
+        self.layer_choice = wx.Choice(scroll, choices=self._LAYER_CHOICES)
+        saved_layer = _SETTINGS.get("netlabel_layer", "F.SilkS")
+        layer_idx = self._LAYER_CHOICES.index(saved_layer) if saved_layer in self._LAYER_CHOICES else 0
+        self.layer_choice.SetSelection(layer_idx)
+        style_grid.Add(self.layer_choice, flag=wx.EXPAND)
+
+        style_sizer.Add(style_grid, flag=wx.ALL, border=4)
+
+        align_row = wx.BoxSizer(wx.HORIZONTAL)
+        align_row.Add(wx.StaticText(scroll, label="H align:"),
+                      flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=6)
+        self.h_align_choice = wx.Choice(scroll, choices=["Left", "Center", "Right"])
+        self.h_align_choice.SetSelection(_SETTINGS.get("netlabel_h_align", 1))
+        align_row.Add(self.h_align_choice, flag=wx.RIGHT, border=16)
+        align_row.Add(wx.StaticText(scroll, label="V align:"),
+                      flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=6)
+        self.v_align_choice = wx.Choice(scroll, choices=["Top", "Middle", "Bottom"])
+        self.v_align_choice.SetSelection(_SETTINGS.get("netlabel_v_align", 1))
+        align_row.Add(self.v_align_choice)
+        style_sizer.Add(align_row, flag=wx.ALL, border=4)
+
+        vbox.Add(style_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Status + buttons
+        self.status_label = wx.StaticText(scroll, label="")
+        vbox.Add(self.status_label, flag=wx.LEFT | wx.TOP, border=10)
+
+        hbox_btns = wx.BoxSizer(wx.HORIZONTAL)
+        gen_btn = wx.Button(scroll, label="Generate Labels")
+        gen_btn.Bind(wx.EVT_BUTTON, self.OnGenerate)
+        hbox_btns.Add(gen_btn, flag=wx.RIGHT, border=10)
+
+        undo_btn = wx.Button(scroll, label="Undo Last")
+        undo_btn.Bind(wx.EVT_BUTTON, self.OnUndo)
+        hbox_btns.Add(undo_btn)
+
+        vbox.Add(hbox_btns, flag=wx.ALIGN_CENTER | wx.ALL, border=15)
+
+        scroll.SetSizer(vbox)
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(scroll, 1, wx.EXPAND)
+        self.SetSizer(outer)
+
+        self._last_created = []
+
+        self.OnUpdateUI(None)
+        self.OnModeChange(None)
+
+    def OnModeChange(self, event):
+        self.ref_prefix_ctrl.Enable(self.mode_all.GetValue())
+
+    def OnUpdateUI(self, event):
+        self.strip_ctrl.Enable(self.strip_cb.GetValue())
+
+    def _clean_net_name(self, raw, strip_prefix, strip_text):
+        name = raw.lstrip("/")
+        if strip_prefix and strip_text and name.startswith(strip_text):
+            name = name[len(strip_text):]
+        return name
+
+    def _rotated_offset(self, offset_x_iu, offset_y_iu, angle_deg):
+        """Rotate offset vector by footprint angle (clockwise, KiCad coords)."""
+        rad = math.radians(angle_deg)
+        rx = int( offset_x_iu * math.cos(rad) + offset_y_iu * math.sin(rad))
+        ry = int(-offset_x_iu * math.sin(rad) + offset_y_iu * math.cos(rad))
+        return rx, ry
+
+    def OnGenerate(self, event):
+        board = pcbnew.GetBoard()
+
+        ref_prefix     = self.ref_prefix_ctrl.GetValue().strip()
+        mode_selected  = self.mode_selected.GetValue()
+        pad_num        = self.pad_num_ctrl.GetValue().strip()
+        strip_prefix   = self.strip_cb.GetValue()
+        strip_text     = self.strip_ctrl.GetValue()
+        offset_x_iu    = pcbnew.FromMM(self.offset_x_ctrl.GetValue())
+        offset_y_iu    = pcbnew.FromMM(self.offset_y_ctrl.GetValue())
+        rotate_with_fp = self.rotate_with_fp_cb.GetValue()
+        size_iu        = pcbnew.FromMM(self.size_ctrl.GetValue())
+        thickness_iu   = pcbnew.FromMM(self.thickness_ctrl.GetValue())
+        extra_rot      = self.rotation_ctrl.GetValue()
+        layer_name     = self._LAYER_CHOICES[self.layer_choice.GetSelection()]
+        layer_id       = board.GetLayerID(layer_name)
+        h_align        = self.h_align_choice.GetSelection()
+        v_align        = self.v_align_choice.GetSelection()
+
+        _SETTINGS["netlabel_ref_prefix"]     = ref_prefix
+        _SETTINGS["netlabel_mode_selected"]  = mode_selected
+        _SETTINGS["netlabel_pad_num"]        = pad_num
+        _SETTINGS["netlabel_strip_prefix"]   = strip_prefix
+        _SETTINGS["netlabel_strip_text"]     = strip_text
+        _SETTINGS["netlabel_offset_x"]       = self.offset_x_ctrl.GetValue()
+        _SETTINGS["netlabel_offset_y"]       = self.offset_y_ctrl.GetValue()
+        _SETTINGS["netlabel_rotate_with_fp"] = rotate_with_fp
+        _SETTINGS["netlabel_size"]           = self.size_ctrl.GetValue()
+        _SETTINGS["netlabel_thickness"]      = self.thickness_ctrl.GetValue()
+        _SETTINGS["netlabel_rotation"]       = extra_rot
+        _SETTINGS["netlabel_layer"]          = layer_name
+        _SETTINGS["netlabel_h_align"]        = h_align
+        _SETTINGS["netlabel_v_align"]        = v_align
+        _save_settings()
+
+        H_ALIGNS = [pcbnew.GR_TEXT_H_ALIGN_LEFT,
+                    pcbnew.GR_TEXT_H_ALIGN_CENTER,
+                    pcbnew.GR_TEXT_H_ALIGN_RIGHT]
+        V_ALIGNS = [pcbnew.GR_TEXT_V_ALIGN_TOP,
+                    pcbnew.GR_TEXT_V_ALIGN_CENTER,
+                    pcbnew.GR_TEXT_V_ALIGN_BOTTOM]
+
+        created = []
+        skipped = []
+
+        for fp in board.GetFootprints():
+            if mode_selected and not fp.IsSelected():
+                continue
+            ref = fp.GetReference()
+            if not mode_selected and ref_prefix and not ref.startswith(ref_prefix):
+                continue
+
+            pad = fp.FindPadByNumber(pad_num)
+            if pad is None:
+                skipped.append(ref)
+                continue
+
+            net = pad.GetNet()
+            if net is None:
+                skipped.append(ref)
+                continue
+            raw_name = net.GetNetname()
+            if not raw_name:
+                skipped.append(ref)
+                continue
+
+            label_text = self._clean_net_name(raw_name, strip_prefix, strip_text)
+            if not label_text:
+                skipped.append(ref)
+                continue
+
+            fp_pos   = fp.GetPosition()
+            fp_angle = fp.GetOrientation().AsDegrees()
+
+            if rotate_with_fp:
+                dx, dy = self._rotated_offset(offset_x_iu, offset_y_iu, fp_angle)
+            else:
+                dx, dy = int(offset_x_iu), int(offset_y_iu)
+
+            text = pcbnew.PCB_TEXT(board)
+            text.SetText(label_text)
+            text.SetPosition(pcbnew.VECTOR2I(fp_pos.x + dx, fp_pos.y + dy))
+            text.SetLayer(layer_id)
+            text.SetTextSize(pcbnew.VECTOR2I(int(size_iu), int(size_iu)))
+            text.SetTextThickness(int(thickness_iu))
+            total_rot = (fp_angle if rotate_with_fp else 0.0) + extra_rot
+            text.SetTextAngle(pcbnew.EDA_ANGLE(total_rot, pcbnew.DEGREES_T))
+            text.SetHorizJustify(H_ALIGNS[h_align])
+            text.SetVertJustify(V_ALIGNS[v_align])
+
+            board.Add(text)
+            created.append(text)
+
+        self._last_created = created
+        pcbnew.Refresh()
+
+        status = f"Created {len(created)} label(s)"
+        if skipped:
+            status += f", skipped {len(skipped)}"
+        self.status_label.SetLabel(status)
+
+        if skipped:
+            detail = ", ".join(skipped[:10])
+            if len(skipped) > 10:
+                detail += f" ... (+{len(skipped)-10} more)"
+            wx.MessageBox(
+                f"Created {len(created)} label(s).\n"
+                f"Skipped {len(skipped)} (pad not found or no net): {detail}",
+                "Done", wx.OK | wx.ICON_INFORMATION)
+
+    def OnUndo(self, event):
+        if not self._last_created:
+            self.status_label.SetLabel("Nothing to undo")
+            return
+        board = pcbnew.GetBoard()
+        for text in self._last_created:
+            board.Remove(text)
+        count = len(self._last_created)
+        self._last_created = []
+        pcbnew.Refresh()
+        self.status_label.SetLabel(f"Removed {count} label(s)")
