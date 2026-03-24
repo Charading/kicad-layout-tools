@@ -120,6 +120,18 @@ _DEFAULT_SETTINGS = {
     'netlabel_layer': 'F.SilkS',
     'netlabel_h_align': 1,
     'netlabel_v_align': 1,
+    # Text Size Finder settings
+    'textsize_match': 1.0,
+    'textsize_tolerance': 0.011,
+    'textsize_standalone': True,
+    'textsize_fp_ref': True,
+    'textsize_fp_value': True,
+    'textsize_fp_text': True,
+    'textsize_layer_filter': False,
+    'textsize_layer': 'F.SilkS',
+    'textsize_new_size': 0.8,
+    'textsize_resize_thickness': False,
+    'textsize_new_thickness': 0.12,
     # Resize Vias settings
     'rvias_selected_only': False,
     'rvias_filter_enabled': False,
@@ -184,6 +196,7 @@ class LayoutToolsDialog(wx.Dialog):
         self.select_holes_panel = SelectHolesPanel(notebook)
         self.resize_vias_panel = ResizeViasPanel(notebook)
         self.net_label_panel = NetLabelPanel(notebook)
+        self.text_size_panel = TextSizePanel(notebook)
 
         notebook.AddPage(self.rotate_panel, "Rotate Items")
         notebook.AddPage(self.flip_panel, "Flip Items")
@@ -201,6 +214,7 @@ class LayoutToolsDialog(wx.Dialog):
         notebook.AddPage(self.select_holes_panel, "Select Holes")
         notebook.AddPage(self.resize_vias_panel, "Resize Vias")
         notebook.AddPage(self.net_label_panel, "Net Labels")
+        notebook.AddPage(self.text_size_panel, "Text Size")
         
         # Main sizer
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -5011,3 +5025,272 @@ class NetLabelPanel(wx.Panel):
         self._last_created = []
         pcbnew.Refresh()
         self.status_label.SetLabel(f"Removed {count} label(s)")
+
+
+class TextSizePanel(wx.Panel):
+    """Find all text of a given size, select it, and optionally resize it."""
+
+    _LAYER_CHOICES = [
+        "F.SilkS", "B.SilkS", "F.Fab", "B.Fab",
+        "F.Cu", "B.Cu", "F.Courtyard", "B.Courtyard",
+        "User.1", "User.2", "User.3",
+    ]
+
+    def __init__(self, parent):
+        wx.Panel.__init__(self, parent)
+
+        scroll = wx.ScrolledWindow(self, style=wx.VSCROLL)
+        scroll.SetScrollRate(0, 10)
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Title
+        title = wx.StaticText(scroll, label="Text Size Finder / Resizer")
+        title_font = title.GetFont()
+        title_font.PointSize += 2
+        title_font = title_font.Bold()
+        title.SetFont(title_font)
+        vbox.Add(title, flag=wx.ALL, border=10)
+
+        desc = wx.StaticText(scroll, label=(
+            "Select all text items matching a specific size across the whole board. "
+            "Covers standalone text, footprint references, values, and user text. "
+            "Optionally resize and/or change stroke thickness in one click."))
+        desc.Wrap(420)
+        vbox.Add(desc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        # Match size
+        match_box = wx.StaticBox(scroll, label="Match Text Size")
+        match_sizer = wx.StaticBoxSizer(match_box, wx.VERTICAL)
+
+        size_row = wx.BoxSizer(wx.HORIZONTAL)
+        size_row.Add(wx.StaticText(scroll, label="Size to find (mm):"),
+                     flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
+        self.match_ctrl = wx.SpinCtrlDouble(scroll, min=0.01, max=50.0,
+                                            initial=_SETTINGS.get("textsize_match", 1.0),
+                                            inc=0.1, size=(80, -1))
+        self.match_ctrl.SetDigits(2)
+        size_row.Add(self.match_ctrl, flag=wx.RIGHT, border=16)
+        size_row.Add(wx.StaticText(scroll, label="Tolerance (mm):"),
+                     flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
+        self.tol_ctrl = wx.SpinCtrlDouble(scroll, min=0.001, max=1.0,
+                                          initial=_SETTINGS.get("textsize_tolerance", 0.011),
+                                          inc=0.005, size=(70, -1))
+        self.tol_ctrl.SetDigits(3)
+        size_row.Add(self.tol_ctrl)
+        match_sizer.Add(size_row, flag=wx.ALL, border=4)
+
+        hint_match = wx.StaticText(scroll,
+            label="Matches text whose height is within tolerance of the target size.")
+        hint_match.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        match_sizer.Add(hint_match, flag=wx.LEFT | wx.BOTTOM, border=4)
+
+        vbox.Add(match_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Include types
+        types_box = wx.StaticBox(scroll, label="Include Text Types")
+        types_sizer = wx.StaticBoxSizer(types_box, wx.VERTICAL)
+
+        self.cb_standalone = wx.CheckBox(scroll, label="Standalone board text (PCB_TEXT)")
+        self.cb_fp_ref     = wx.CheckBox(scroll, label="Footprint references")
+        self.cb_fp_value   = wx.CheckBox(scroll, label="Footprint values")
+        self.cb_fp_text    = wx.CheckBox(scroll, label="Footprint user text")
+        self.cb_standalone.SetValue(_SETTINGS.get("textsize_standalone", True))
+        self.cb_fp_ref.SetValue(_SETTINGS.get("textsize_fp_ref", True))
+        self.cb_fp_value.SetValue(_SETTINGS.get("textsize_fp_value", True))
+        self.cb_fp_text.SetValue(_SETTINGS.get("textsize_fp_text", True))
+
+        types_sizer.Add(self.cb_standalone, flag=wx.ALL, border=4)
+        types_sizer.Add(self.cb_fp_ref,     flag=wx.ALL, border=4)
+        types_sizer.Add(self.cb_fp_value,   flag=wx.ALL, border=4)
+        types_sizer.Add(self.cb_fp_text,    flag=wx.ALL, border=4)
+
+        vbox.Add(types_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        # Layer filter
+        layer_box = wx.StaticBox(scroll, label="Layer Filter (optional)")
+        layer_sizer = wx.StaticBoxSizer(layer_box, wx.VERTICAL)
+
+        self.layer_filter_cb = wx.CheckBox(scroll, label="Only match text on layer:")
+        self.layer_filter_cb.SetValue(_SETTINGS.get("textsize_layer_filter", False))
+        layer_sizer.Add(self.layer_filter_cb, flag=wx.ALL, border=4)
+
+        self.layer_choice = wx.Choice(scroll, choices=self._LAYER_CHOICES)
+        saved = _SETTINGS.get("textsize_layer", "F.SilkS")
+        idx = self._LAYER_CHOICES.index(saved) if saved in self._LAYER_CHOICES else 0
+        self.layer_choice.SetSelection(idx)
+        layer_sizer.Add(self.layer_choice, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=4)
+
+        vbox.Add(layer_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        self.layer_filter_cb.Bind(wx.EVT_CHECKBOX, self.OnUpdateUI)
+
+        # Resize
+        resize_box = wx.StaticBox(scroll, label="Resize")
+        resize_sizer = wx.StaticBoxSizer(resize_box, wx.VERTICAL)
+
+        new_size_row = wx.BoxSizer(wx.HORIZONTAL)
+        new_size_row.Add(wx.StaticText(scroll, label="New size (mm):"),
+                         flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
+        self.new_size_ctrl = wx.SpinCtrlDouble(scroll, min=0.01, max=50.0,
+                                               initial=_SETTINGS.get("textsize_new_size", 0.8),
+                                               inc=0.1, size=(80, -1))
+        self.new_size_ctrl.SetDigits(2)
+        new_size_row.Add(self.new_size_ctrl)
+        resize_sizer.Add(new_size_row, flag=wx.ALL, border=4)
+
+        self.resize_thickness_cb = wx.CheckBox(scroll, label="Also set stroke thickness (mm):")
+        self.resize_thickness_cb.SetValue(_SETTINGS.get("textsize_resize_thickness", False))
+        resize_sizer.Add(self.resize_thickness_cb, flag=wx.ALL, border=4)
+
+        thick_row = wx.BoxSizer(wx.HORIZONTAL)
+        self.new_thickness_ctrl = wx.SpinCtrlDouble(scroll, min=0.01, max=5.0,
+                                                    initial=_SETTINGS.get("textsize_new_thickness", 0.12),
+                                                    inc=0.01, size=(80, -1))
+        self.new_thickness_ctrl.SetDigits(2)
+        thick_row.Add(self.new_thickness_ctrl)
+        resize_sizer.Add(thick_row, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=4)
+
+        vbox.Add(resize_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+        self.resize_thickness_cb.Bind(wx.EVT_CHECKBOX, self.OnUpdateUI)
+
+        # Status
+        self.status_label = wx.StaticText(scroll, label="")
+        vbox.Add(self.status_label, flag=wx.LEFT | wx.TOP, border=10)
+
+        # Buttons
+        hbox_btns = wx.BoxSizer(wx.HORIZONTAL)
+        self.select_btn = wx.Button(scroll, label="Select Matching Text")
+        self.select_btn.Bind(wx.EVT_BUTTON, self.OnSelect)
+        hbox_btns.Add(self.select_btn, flag=wx.RIGHT, border=10)
+
+        self.resize_btn = wx.Button(scroll, label="Select & Resize")
+        self.resize_btn.Bind(wx.EVT_BUTTON, self.OnResize)
+        hbox_btns.Add(self.resize_btn, flag=wx.RIGHT, border=10)
+
+        deselect_btn = wx.Button(scroll, label="Deselect All")
+        deselect_btn.Bind(wx.EVT_BUTTON, self.OnDeselectAll)
+        hbox_btns.Add(deselect_btn)
+
+        vbox.Add(hbox_btns, flag=wx.ALIGN_CENTER | wx.ALL, border=15)
+
+        scroll.SetSizer(vbox)
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(scroll, 1, wx.EXPAND)
+        self.SetSizer(outer)
+
+        self.OnUpdateUI(None)
+
+    # helpers
+
+    def OnUpdateUI(self, event):
+        self.layer_choice.Enable(self.layer_filter_cb.GetValue())
+        self.new_thickness_ctrl.Enable(self.resize_thickness_cb.GetValue())
+
+    def _save_settings(self):
+        _SETTINGS["textsize_match"]             = self.match_ctrl.GetValue()
+        _SETTINGS["textsize_tolerance"]         = self.tol_ctrl.GetValue()
+        _SETTINGS["textsize_standalone"]        = self.cb_standalone.GetValue()
+        _SETTINGS["textsize_fp_ref"]            = self.cb_fp_ref.GetValue()
+        _SETTINGS["textsize_fp_value"]          = self.cb_fp_value.GetValue()
+        _SETTINGS["textsize_fp_text"]           = self.cb_fp_text.GetValue()
+        _SETTINGS["textsize_layer_filter"]      = self.layer_filter_cb.GetValue()
+        _SETTINGS["textsize_layer"]             = self._LAYER_CHOICES[self.layer_choice.GetSelection()]
+        _SETTINGS["textsize_new_size"]          = self.new_size_ctrl.GetValue()
+        _SETTINGS["textsize_resize_thickness"]  = self.resize_thickness_cb.GetValue()
+        _SETTINGS["textsize_new_thickness"]     = self.new_thickness_ctrl.GetValue()
+        _save_settings()
+
+    def _matches(self, item, board, target_iu, tol_iu, layer_filter, layer_id):
+        size = item.GetTextSize().y      # height — the canonical "text size"
+        if abs(size - target_iu) > tol_iu:
+            return False
+        if layer_filter and item.GetLayer() != layer_id:
+            return False
+        return True
+
+    def _collect(self, board):
+        target_iu     = pcbnew.FromMM(self.match_ctrl.GetValue())
+        tol_iu        = pcbnew.FromMM(self.tol_ctrl.GetValue())
+        layer_filter  = self.layer_filter_cb.GetValue()
+        layer_name    = self._LAYER_CHOICES[self.layer_choice.GetSelection()]
+        layer_id      = board.GetLayerID(layer_name) if layer_filter else -1
+
+        inc_standalone = self.cb_standalone.GetValue()
+        inc_ref        = self.cb_fp_ref.GetValue()
+        inc_value      = self.cb_fp_value.GetValue()
+        inc_fptext     = self.cb_fp_text.GetValue()
+
+        found = []
+
+        if inc_standalone:
+            for item in board.GetDrawings():
+                if isinstance(item, pcbnew.PCB_TEXT):
+                    if self._matches(item, board, target_iu, tol_iu, layer_filter, layer_id):
+                        found.append(item)
+
+        for fp in board.GetFootprints():
+            if inc_ref:
+                ref = fp.Reference()
+                if self._matches(ref, board, target_iu, tol_iu, layer_filter, layer_id):
+                    found.append(ref)
+            if inc_value:
+                val = fp.Value()
+                if self._matches(val, board, target_iu, tol_iu, layer_filter, layer_id):
+                    found.append(val)
+            if inc_fptext:
+                for item in fp.GraphicalItems():
+                    if isinstance(item, pcbnew.PCB_TEXT):
+                        if self._matches(item, board, target_iu, tol_iu, layer_filter, layer_id):
+                            found.append(item)
+
+        return found
+
+    # actions
+
+    def OnSelect(self, event):
+        board = pcbnew.GetBoard()
+        self._save_settings()
+        items = self._collect(board)
+        for item in items:
+            item.SetSelected()
+        pcbnew.Refresh()
+        self.status_label.SetLabel(f"Selected {len(items)} text item(s)")
+
+    def OnResize(self, event):
+        board = pcbnew.GetBoard()
+        self._save_settings()
+        items = self._collect(board)
+
+        new_size_iu      = pcbnew.FromMM(self.new_size_ctrl.GetValue())
+        do_thickness     = self.resize_thickness_cb.GetValue()
+        new_thickness_iu = pcbnew.FromMM(self.new_thickness_ctrl.GetValue())
+
+        for item in items:
+            item.SetTextSize(pcbnew.VECTOR2I(new_size_iu, new_size_iu))
+            if do_thickness:
+                item.SetTextThickness(new_thickness_iu)
+            item.SetSelected()
+
+        pcbnew.Refresh()
+        msg = f"Resized {len(items)} text item(s) to {self.new_size_ctrl.GetValue():.2f} mm"
+        if do_thickness:
+            msg += f" / {self.new_thickness_ctrl.GetValue():.2f} mm thick"
+        self.status_label.SetLabel(msg)
+
+    def OnDeselectAll(self, event):
+        board = pcbnew.GetBoard()
+        for fp in board.GetFootprints():
+            fp.ClearSelected()
+            for pad in fp.Pads():
+                pad.ClearSelected()
+            fp.Reference().ClearSelected()
+            fp.Value().ClearSelected()
+            for item in fp.GraphicalItems():
+                item.ClearSelected()
+        for item in board.GetDrawings():
+            item.ClearSelected()
+        for track in board.GetTracks():
+            track.ClearSelected()
+        pcbnew.Refresh()
+        self.status_label.SetLabel("Deselected all items")
